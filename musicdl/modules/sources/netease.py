@@ -12,7 +12,6 @@ import hmac
 import json
 import copy
 import time
-import uuid
 import base64
 import random
 import hashlib
@@ -22,9 +21,7 @@ from contextlib import suppress
 from .base import BaseMusicClient
 from pathvalidate import sanitize_filepath
 from urllib.parse import urlparse, parse_qs
-from cryptography.hazmat.primitives.asymmetric import padding
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from cryptography.hazmat.primitives import serialization, hashes
 from ..utils.hosts import NETEASE_MUSIC_HOSTS, hostmatchessuffix, obtainhostname
 from ..utils.neteaseutils import EapiCryptoUtils, MUSIC_QUALITIES, DEFAULT_COOKIES
 from rich.progress import Progress, TextColumn, BarColumn, TimeRemainingColumn, MofNCompleteColumn
