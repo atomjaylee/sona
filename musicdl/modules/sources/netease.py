@@ -436,15 +436,31 @@ class NeteaseMusicClient(BaseMusicClient):
         lyric = cleanlrc(safeextractfromdict(download_result, ['data', 'lyric'], '') or 'NULL')
         download_url_status: dict = self.audio_link_tester.test(url=download_url, request_overrides=request_overrides, renew_session=True)
         song_info = SongInfo(
-            raw_data={'search': search_result, 'download': download_result, 'lyric': {}}, source=self.source, song_name=legalizestring(safeextractfromdict(download_result, ['data', 'song'], None)), singers=legalizestring(str(safeextractfromdict(download_result, ['data', 'singer'], '') or '').replace('/', ', ')), album=legalizestring(safeextractfromdict(download_result, ['data', 'album_name'], None)), ext=download_url_status['ext'], 
+            raw_data={'search': search_result, 'download': download_result, 'lyric': {}, 'quality': 'hires'}, source=self.source, song_name=legalizestring(safeextractfromdict(download_result, ['data', 'song'], None)), singers=legalizestring(str(safeextractfromdict(download_result, ['data', 'singer'], '') or '').replace('/', ', ')), album=legalizestring(safeextractfromdict(download_result, ['data', 'album_name'], None)), ext=download_url_status['ext'], 
             file_size_bytes=download_url_status['file_size_bytes'], file_size=download_url_status['file_size'], identifier=song_id, duration_s=extractdurationsecondsfromlrc(lyric), duration=SongInfoUtils.seconds2hms(extractdurationsecondsfromlrc(lyric)), lyric=lyric, cover_url=safeextractfromdict(download_result, ['data', 'cover'], None), download_url=download_url_status['download_url'], download_url_status=download_url_status, 
+        )
+        # return
+        return song_info
+    '''_parsewithgdstudioapi'''
+    def _parsewithgdstudioapi(self, search_result: dict, request_overrides: dict = None):
+        # init
+        request_overrides, song_id, song_info = request_overrides or {}, search_result['id'], SongInfo(source=self.source, raw_data={'quality': MUSIC_QUALITIES[-1]})
+        if not search_result.get('name'): search_result.update(self._getsongmetainfo(song_id=song_id, request_overrides=request_overrides))
+        # parse
+        (resp := self.get(f"https://music-api.gdstudio.xyz/api.php?types=url&id={song_id}&source=netease&br=999", timeout=10, **request_overrides)).raise_for_status()
+        if not (download_url := safeextractfromdict((download_result := resp2json(resp=resp)), ['url'], None)) or not str(download_url).startswith('http'): return song_info
+        download_url_status: dict = self.audio_link_tester.test(url=download_url, request_overrides=request_overrides, renew_session=True)
+        with suppress(Exception): duration_in_secs = 0; duration_in_secs = float(search_result.get('dt', 0) or 0) / 1000
+        song_info = SongInfo(
+            raw_data={'search': search_result, 'download': download_result, 'lyric': {}, 'quality': 'hires'}, source=self.source, song_name=legalizestring(search_result.get('name')), singers=legalizestring(', '.join([singer.get('name') for singer in (safeextractfromdict(search_result, ['ar'], []) or []) if isinstance(singer, dict) and singer.get('name')])), album=legalizestring(safeextractfromdict(search_result, ['al', 'name'], None)), 
+            ext=download_url_status['ext'], file_size_bytes=download_url_status['file_size_bytes'], file_size=download_url_status['file_size'], identifier=song_id, duration_s=duration_in_secs, duration=SongInfoUtils.seconds2hms(duration_in_secs), lyric=None, cover_url=safeextractfromdict(search_result, ['al', 'picUrl'], None), download_url=download_url_status['download_url'], download_url_status=download_url_status, 
         )
         # return
         return song_info
     '''_parsewiththirdpartapis'''
     def _parsewiththirdpartapis(self, search_result: dict, request_overrides: dict = None):
         if (cookies := self.default_cookies or request_overrides.get('cookies')) and (cookies != DEFAULT_COOKIES): return SongInfo(source=self.source, raw_data={'quality': MUSIC_QUALITIES[-1]})
-        for parser_func in [self._parsewithxiaoqinapi, self._parsewithcggapi, self._parsewithxingmianapi, self._parsewithhaitangwapi, self._parsewithcunyuapi, self._parsewithyutangxiaowuapi, self._parsewithxiaotapi, self._parsewithxcvtsapi, self._parsewithnycnmbyfunsapi, self._parsewithceseetapi, self._parsewithxianyuwapi,
+        for parser_func in [self._parsewithxiaoqinapi, self._parsewithcggapi, self._parsewithxingmianapi, self._parsewithhaitangwapi, self._parsewithcunyuapi, self._parsewithyutangxiaowuapi, self._parsewithxiaotapi, self._parsewithgdstudioapi, self._parsewithxcvtsapi, self._parsewithnycnmbyfunsapi, self._parsewithceseetapi, self._parsewithxianyuwapi,
                             self._parsewithxuanluogeapi, self._parsewithrrvennapi, self._parsewithznnuapi, self._parsewithcyruiapi, self._parsewithtmetuapi, self._parsewithjfjtapi, self._parsewithbugpkapi, self._parsewithguyueiapi, self._parsewithmanshuoapi,]:  # invalid apis (test at 2026/05/19)
             song_info_flac = SongInfo(source=self.source, raw_data={'search': search_result, 'download': {}, 'lyric': {}, 'quality': MUSIC_QUALITIES[-1]})
             with suppress(Exception): song_info_flac = parser_func(search_result, request_overrides)
