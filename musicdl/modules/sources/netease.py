@@ -105,8 +105,8 @@ class NeteaseMusicClient(BaseMusicClient):
         to_seconds_func = lambda x: (lambda s: 0 if not s else (lambda p: p[-3]*3600+p[-2]*60+p[-1] if len(p)>=3 else p[0]*60+p[1] if len(p)==2 else p[0] if len(p)==1 else 0)([int(v) for v in re.findall(r'\d+', s.replace('：', ':'))]) if (':' in s or '：' in s) else (lambda h,m,sec,num: (lambda tot: tot if tot>0 else num)(h*3600+m*60+sec))(int(mo.group(1)) if (mo:=re.search(r'(\d+)\s*(?:小时|时|h|hr)', s)) else 0, int(mo.group(1)) if (mo:=re.search(r'(\d+)\s*(?:分钟|分|m|min)', s)) else 0, (int(mo.group(1)) if (mo:=re.search(r'(\d+)\s*(?:秒|s|sec)', s)) else (int(mo.group(1)) if (mo:=re.search(r'(?:分钟|分|m|min)\s*(\d+)\b', s)) else 0)), int(mo.group(0)) if (mo:=re.search(r'\d+', s)) else 0))(str(x).strip().lower())
         # parse
         for music_quality in MUSIC_QUALITIES:
-            with suppress(Exception): resp = None; (resp := self.get(url=f'https://api-v2.cenguigui.cn/api/netease/music_v1.php?id={song_id}&type=json&level={music_quality}', timeout=10, **request_overrides)).raise_for_status()
-            if (not locals().get('resp')) or (not hasattr(locals().get('resp'), 'text')) or (not (download_url := safeextractfromdict((download_result := resp2json(resp=resp)), ['data', 'url'], '')) or not str(download_url).startswith('http')): break
+            (resp := self.get(url=f'https://api-v2.cenguigui.cn/api/netease/music_v1.php?id={song_id}&type=json&level={music_quality}', timeout=10, **request_overrides)).raise_for_status()
+            if (not (download_url := safeextractfromdict((download_result := resp2json(resp=resp)), ['data', 'url'], '')) or not str(download_url).startswith('http')): break
             download_url_status: dict = self.audio_link_tester.test(url=download_url, request_overrides=request_overrides, renew_session=True)
             duration_in_secs = to_seconds_func(safeextractfromdict(download_result, ['data', 'duration'], '') or '')
             song_info = SongInfo(
@@ -123,8 +123,7 @@ class NeteaseMusicClient(BaseMusicClient):
         to_seconds_func = lambda x: (lambda s: 0 if not s else (lambda p: p[-3]*3600+p[-2]*60+p[-1] if len(p)>=3 else p[0]*60+p[1] if len(p)==2 else p[0] if len(p)==1 else 0)([int(v) for v in re.findall(r'\d+', s.replace('：', ':'))]) if (':' in s or '：' in s) else (lambda h,m,sec,num: (lambda tot: tot if tot>0 else num)(h*3600+m*60+sec))(int(mo.group(1)) if (mo:=re.search(r'(\d+)\s*(?:小时|时|h|hr)', s)) else 0, int(mo.group(1)) if (mo:=re.search(r'(\d+)\s*(?:分钟|分|m|min)', s)) else 0, (int(mo.group(1)) if (mo:=re.search(r'(\d+)\s*(?:秒|s|sec)', s)) else (int(mo.group(1)) if (mo:=re.search(r'(?:分钟|分|m|min)\s*(\d+)\b', s)) else 0)), int(mo.group(0)) if (mo:=re.search(r'\d+', s)) else 0))(str(x).strip().lower())
         # parse
         for music_quality in MUSIC_QUALITIES:
-            with suppress(Exception): resp = None; (resp := self.get(url=f'https://musicapi.haitangw.net/music/wy.php?id={song_id}&level={music_quality}&type=json', timeout=10, **request_overrides)).raise_for_status()
-            if not locals().get('resp') or not hasattr(locals().get('resp'), 'text'): break
+            (resp := self.get(url=f'https://musicapi.haitangw.net/music/wy.php?id={song_id}&level={music_quality}&type=json', timeout=10, **request_overrides)).raise_for_status()
             if not (download_url := safeextractfromdict((download_result := resp2json(resp=resp)), ['data', 'url'], '')) or not str(download_url).startswith('http'): continue
             download_url_status: dict = self.audio_link_tester.test(url=download_url, request_overrides=request_overrides, renew_session=True)
             with suppress(Exception): duration_in_secs = 0; duration_in_secs = to_seconds_func(safeextractfromdict(download_result, ['data', 'duration'], 0))
@@ -141,8 +140,7 @@ class NeteaseMusicClient(BaseMusicClient):
         request_overrides, song_id = request_overrides or {}, search_result['id']
         # parse
         for music_quality in MUSIC_QUALITIES:
-            with suppress(Exception): resp = None; (resp := self.get(url=f'https://www.tmetu.cn/api/music/api.php?miss=songAll&id={song_id}&level={music_quality}&withLyric=true', timeout=10, **request_overrides)).raise_for_status()
-            if not locals().get('resp') or not hasattr(locals().get('resp'), 'text'): break
+            (resp := self.get(url=f'https://www.tmetu.cn/api/music/api.php?miss=songAll&id={song_id}&level={music_quality}&withLyric=true', timeout=10, **request_overrides)).raise_for_status()
             if not (download_url := safeextractfromdict((download_result := resp2json(resp=resp)), ['data', 'audioUrl'], '')) or not str(download_url).startswith('http'): continue
             download_url_status: dict = self.audio_link_tester.test(url=download_url, request_overrides=request_overrides, renew_session=True)
             with suppress(Exception): duration_in_secs = 0; duration_in_secs = float(safeextractfromdict(download_result, ['data', 'duration'], 0)) / 1000
@@ -161,8 +159,7 @@ class NeteaseMusicClient(BaseMusicClient):
         for music_quality in MUSIC_QUALITIES:
             signature = hashlib.md5(((timestamp_str := str(int(time.time()))) + 'kxz_163music_secret_key_2024').encode('utf-8')).hexdigest()
             params = {"action": "music", "url": str(song_id), "level": music_quality, "type": "json", "timestamp": timestamp_str, "signature": signature}
-            with suppress(Exception): resp = None; (resp := self.get(url=f'https://music.rrvenn.cn/api/api.php', params=params, timeout=10, **request_overrides)).raise_for_status()
-            if not locals().get('resp') or not hasattr(locals().get('resp'), 'text'): break
+            (resp := self.get(url=f'https://music.rrvenn.cn/api/api.php', params=params, timeout=10, **request_overrides)).raise_for_status()
             if not (download_url := safeextractfromdict((download_result := resp2json(resp=resp)), ['url'], '')) or not str(download_url).startswith('http'): continue
             download_url_status: dict = self.audio_link_tester.test(url=download_url, request_overrides=request_overrides, renew_session=True)
             song_info = SongInfo(
@@ -203,8 +200,7 @@ class NeteaseMusicClient(BaseMusicClient):
         request_overrides, song_id = request_overrides or {}, search_result['id']
         # parse download result
         for music_quality in MUSIC_QUALITIES:
-            with suppress(Exception): resp = None; (resp := self.get(url=f'https://music.xuanluoge.top/api.php?miss=getMusicUrl&id={song_id}&level={music_quality}', timeout=10, **request_overrides)).raise_for_status()
-            if not locals().get('resp') or not hasattr(locals().get('resp'), 'text'): break
+            (resp := self.get(url=f'https://music.xuanluoge.top/api.php?miss=getMusicUrl&id={song_id}&level={music_quality}', timeout=10, **request_overrides)).raise_for_status()
             if not (download_url := safeextractfromdict((download_result := resp2json(resp=resp)), ['data', 0, 'url'], '')) or not str(download_url).startswith('http'): continue
             with suppress(Exception): (resp := self.get(url=f'https://music.xuanluoge.top/api.php?miss=songDetail&id={song_id}', timeout=10, **request_overrides)).raise_for_status(); download_result['songDetail'] = resp2json(resp=resp)
             download_url_status: dict = self.audio_link_tester.test(url=download_url, request_overrides=request_overrides, renew_session=True)
@@ -228,8 +224,7 @@ class NeteaseMusicClient(BaseMusicClient):
         request_overrides, song_id = request_overrides or {}, search_result['id']
         # parse
         for music_quality in MUSIC_QUALITIES:
-            with suppress(Exception): resp = None; (resp := self.get(f'https://api.bugpk.com/api/163_music?ids={song_id}&level={music_quality}&type=json', timeout=10, **request_overrides)).raise_for_status()
-            if not locals().get('resp') or not hasattr(locals().get('resp'), 'text'): break
+            (resp := self.get(f'https://api.bugpk.com/api/163_music?ids={song_id}&level={music_quality}&type=json', timeout=10, **request_overrides)).raise_for_status()
             if not (download_url := safeextractfromdict((download_result := resp2json(resp=resp)), ['url'], '')) or not str(download_url).startswith('http'): continue
             download_url_status: dict = self.audio_link_tester.test(url=download_url, request_overrides=request_overrides, renew_session=True)
             duration_in_secs = extractdurationsecondsfromlrc((lyric := cleanlrc(download_result.get('lyric') or '')))
@@ -245,10 +240,10 @@ class NeteaseMusicClient(BaseMusicClient):
         # init
         request_overrides, song_id, music_quality_mapper = request_overrides or {}, search_result['id'], {'jymaster': '超清母带', 'dolby': '杜比全景声', 'sky': '沉浸环绕声', 'jyeffect': '高清环绕声', 'hires': 'Hi-Res', 'lossless': '无损', 'exhigh': '高音质', 'standard': '低音质'}
         to_seconds_func = lambda x: (lambda s: 0 if not s else (lambda p: p[-3]*3600+p[-2]*60+p[-1] if len(p)>=3 else p[0]*60+p[1] if len(p)==2 else p[0] if len(p)==1 else 0)([int(v) for v in re.findall(r'\d+', s.replace('：', ':'))]) if (':' in s or '：' in s) else (lambda h,m,sec,num: (lambda tot: tot if tot>0 else num)(h*3600+m*60+sec))(int(mo.group(1)) if (mo:=re.search(r'(\d+)\s*(?:小时|时|h|hr)', s)) else 0, int(mo.group(1)) if (mo:=re.search(r'(\d+)\s*(?:分钟|分|m|min)', s)) else 0, (int(mo.group(1)) if (mo:=re.search(r'(\d+)\s*(?:秒|s|sec)', s)) else (int(mo.group(1)) if (mo:=re.search(r'(?:分钟|分|m|min)\s*(\d+)\b', s)) else 0)), int(mo.group(0)) if (mo:=re.search(r'\d+', s)) else 0))(str(x).strip().lower())
+        decrypt_func, REQUEST_KEYS = lambda t: base64.b64decode(str(t)[14:].encode('utf-8')).decode('utf-8'), ['charlespikachuNjFkMzcyNDVlNTIwYmE1NzE1MmQxNzEyMTg5YmNjYWUyNTUwNjhiMzkxZDk3NDFkYTI3N2ExOGM3ZWQ2OTQyYQ==', 'charlespikachuZjkwNjkzYjM2ODFjY2EwMDA4YjNmOTAxNTVjNWY4MDU3ZmM0YTQ4Zjk2MzgxNmFiNTMzZGQxNzViYzhiOTAxZQ==']
         # parse
         for music_quality in MUSIC_QUALITIES:
-            with suppress(Exception): resp = None; (resp := self.get(f'https://1.xingmianapi1.ccwu.cc/API/netease.php?id={song_id}&quality={music_quality_mapper[music_quality]}', timeout=10, **request_overrides)).raise_for_status()
-            if not locals().get('resp') or not hasattr(locals().get('resp'), 'text'): break
+            (resp := self.get(f'https://1.xingmianapi1.ccwu.cc/API/netease.php?id={song_id}&quality={music_quality_mapper[music_quality]}&apikey={decrypt_func(random.choice(REQUEST_KEYS))}', timeout=10, **request_overrides)).raise_for_status()
             if not (download_url := safeextractfromdict((download_result := resp2json(resp=resp)), ['data', 'url'], '')) or not str(download_url).startswith('http'): continue
             download_url_status: dict = self.audio_link_tester.test(url=download_url, request_overrides=request_overrides, renew_session=True)
             duration_in_secs = to_seconds_func(safeextractfromdict(download_result, ['data', 'duration'], None))
@@ -265,8 +260,7 @@ class NeteaseMusicClient(BaseMusicClient):
         request_overrides, song_id = request_overrides or {}, search_result['id']
         # parse
         for music_quality in MUSIC_QUALITIES:
-            with suppress(Exception): resp = None; (resp := self.post('https://dm.jfjt.cc/Song_V1', headers={'Referer': 'https://dm.jfjt.cc/'}, data={'url': song_id, 'level': music_quality, 'type': 'json'}, timeout=10, **request_overrides)).raise_for_status()
-            if not locals().get('resp') or not hasattr(locals().get('resp'), 'text'): break
+            (resp := self.post('https://dm.jfjt.cc/Song_V1', headers={'Referer': 'https://dm.jfjt.cc/'}, data={'url': song_id, 'level': music_quality, 'type': 'json'}, timeout=10, **request_overrides)).raise_for_status()
             if not (download_url := safeextractfromdict((download_result := resp2json(resp=resp)), ['data', 'url'], '')) or not str(download_url).startswith('http'): continue
             download_url_status: dict = self.audio_link_tester.test(url=download_url, request_overrides=request_overrides, renew_session=True)
             with suppress(Exception): duration_in_secs = 0; duration_in_secs = float(download_result['data']['duration']) / 1000
@@ -283,8 +277,7 @@ class NeteaseMusicClient(BaseMusicClient):
         request_overrides, song_id = request_overrides or {}, search_result['id']
         # parse
         for music_quality in MUSIC_QUALITIES:
-            with suppress(Exception): resp = None; (resp := self.get(f'https://yutangxiaowu.cn:4000/Song_V1?url={song_id}&level={music_quality}&type=json', timeout=10, **request_overrides)).raise_for_status()
-            if not locals().get('resp') or not hasattr(locals().get('resp'), 'text'): break
+            (resp := self.get(f'https://yutangxiaowu.cn:4000/Song_V1?url={song_id}&level={music_quality}&type=json', timeout=10, **request_overrides)).raise_for_status()
             if not (download_url := safeextractfromdict((download_result := resp2json(resp=resp)), ['url'], '')) or not str(download_url).startswith('http'): continue
             download_url_status: dict = self.audio_link_tester.test(url=download_url, request_overrides=request_overrides, renew_session=True)
             duration_in_secs = extractdurationsecondsfromlrc((lyric := cleanlrc(download_result.get('lyric') or '')))
@@ -302,8 +295,7 @@ class NeteaseMusicClient(BaseMusicClient):
         decrypt_func, request_overrides, song_id = lambda t: base64.b64decode(str(t)[14:].encode('utf-8')).decode('utf-8'), request_overrides or {}, search_result['id']
         # parse
         for music_quality in MUSIC_QUALITIES:
-            with suppress(Exception): resp = None; (resp := self.get(f'https://api.nycnm.cn/API/163music.php?ids={song_id}&level={music_quality}&type=json&apikey={decrypt_func(random.choice(REQUEST_KEYS))}', timeout=10, **request_overrides)).raise_for_status(); download_result = resp2json(resp=resp)
-            if not locals().get('resp') or not hasattr(locals().get('resp'), 'text'): break
+            (resp := self.get(f'https://api.nycnm.cn/API/163music.php?ids={song_id}&level={music_quality}&type=json&apikey={decrypt_func(random.choice(REQUEST_KEYS))}', timeout=10, **request_overrides)).raise_for_status(); download_result = resp2json(resp=resp)
             with suppress(Exception): download_url = None; download_url = self.get(f'https://api.byfuns.top/1/?id={song_id}&level={music_quality}', timeout=10, **request_overrides).text.strip()
             if not download_url or not str(download_url).startswith('http'): continue
             download_url_status: dict = self.audio_link_tester.test(url=download_url, request_overrides=request_overrides, renew_session=True)
@@ -321,8 +313,7 @@ class NeteaseMusicClient(BaseMusicClient):
         request_overrides, song_id = request_overrides or {}, search_result['id']
         # parse
         for music_quality in MUSIC_QUALITIES:
-            with suppress(Exception): resp = None; (resp := self.get(url=f'https://www.cunyuapi.top/163music_play?id={song_id}&quality={music_quality}', timeout=10, **request_overrides)).raise_for_status()
-            if not locals().get('resp') or not hasattr(locals().get('resp'), 'text'): break
+            (resp := self.get(url=f'https://www.cunyuapi.top/163music_play?id={song_id}&quality={music_quality}', timeout=10, **request_overrides)).raise_for_status()
             if not (download_url := safeextractfromdict((download_result := resp2json(resp=resp)), ['song_file_url'], '')) or not str(download_url).startswith('http'): continue
             download_url_status: dict = self.audio_link_tester.test(url=download_url, request_overrides=request_overrides, renew_session=True)
             duration_in_secs = extractdurationsecondsfromlrc((lyric := cleanlrc(download_result.get('lyric') or '')))
@@ -339,8 +330,7 @@ class NeteaseMusicClient(BaseMusicClient):
         request_overrides, song_id = request_overrides or {}, search_result['id']
         # parse
         for music_quality in MUSIC_QUALITIES:
-            with suppress(Exception): resp = None; (resp := self.post(url=f'https://api.manshuo.ink/wyy/Song_V1', data={'url': song_id, 'level': music_quality, 'type': 'json'}, timeout=10, **request_overrides)).raise_for_status()
-            if not locals().get('resp') or not hasattr(locals().get('resp'), 'text'): break
+            (resp := self.post(url=f'https://api.manshuo.ink/wyy/Song_V1', data={'url': song_id, 'level': music_quality, 'type': 'json'}, timeout=10, **request_overrides)).raise_for_status()
             if not (download_url := safeextractfromdict((download_result := resp2json(resp=resp)), ['data', 'url'], '')) or not str(download_url).startswith('http'): continue
             download_url_status: dict = self.audio_link_tester.test(url=download_url, request_overrides=request_overrides, renew_session=True)
             duration_in_secs = extractdurationsecondsfromlrc((lyric := cleanlrc(safeextractfromdict(download_result, ['data', 'lyric'], '') or '')))
@@ -358,8 +348,7 @@ class NeteaseMusicClient(BaseMusicClient):
         with suppress(Exception): (resp := self.get(f'https://blog.cyrui.cn/netease/api/getSongDetail.php?id={song_id}', **request_overrides)).raise_for_status(); download_result = resp2json(resp=resp)
         # parse
         for music_quality in MUSIC_QUALITIES:
-            with suppress(Exception): resp = None; (resp := self.get(url=f'https://blog.cyrui.cn/netease/api/getMusicUrl.php?id={song_id}&level={music_quality}', timeout=10, **request_overrides)).raise_for_status(); download_result['getMusicUrl'] = resp2json(resp=resp)
-            if not locals().get('resp') or not hasattr(locals().get('resp'), 'text'): break
+            (resp := self.get(url=f'https://blog.cyrui.cn/netease/api/getMusicUrl.php?id={song_id}&level={music_quality}', timeout=10, **request_overrides)).raise_for_status(); download_result['getMusicUrl'] = resp2json(resp=resp)
             if not (download_url := safeextractfromdict(download_result, ['getMusicUrl', 'data', 0, 'url'], '')) or not str(download_url).startswith('http'): continue
             download_url_status: dict = self.audio_link_tester.test(url=download_url, request_overrides=request_overrides, renew_session=True)
             with suppress(Exception): duration_in_secs = 0; duration_in_secs = float(safeextractfromdict(download_result, ['songs', 0, 'dt'], 0)) / 1000
@@ -373,7 +362,7 @@ class NeteaseMusicClient(BaseMusicClient):
     '''_parsewithxianyuwapi'''
     def _parsewithxianyuwapi(self, search_result: dict, request_overrides: dict = None):
         # init
-        decrypt_func, REQUEST_KEYS = lambda t: base64.b64decode(str(t)[14:].encode('utf-8')).decode('utf-8'), ['charlespikachuc2stOTgyNzMxYTI4MGE0ZTU4MTE5ODhmY2EyOTVhOWRkMTQ=', 'charlespikachuc2stYjU3ZDE3YWMzMTBjNjIzZGUwMzZlNjdmYjBkNTk3Y2I=']
+        decrypt_func, REQUEST_KEYS = lambda t: base64.b64decode(str(t)[14:].encode('utf-8')).decode('utf-8'), ['charlespikachuc2stODRiMzc5N2Y5MTg0ODFmZGE0ZDkxMWMwZjYzYjc0MzE=']
         request_overrides, song_id, song_info = request_overrides or {}, search_result['id'], SongInfo(source=self.source, raw_data={'quality': MUSIC_QUALITIES[-1]})
         # parse
         (resp := self.get(f'https://apii.xianyuw.cn/api/v1/163-music-search?id={song_id}&key={decrypt_func(random.choice(REQUEST_KEYS))}&no_url=0&br=hires', **request_overrides)).raise_for_status()
@@ -455,7 +444,8 @@ class NeteaseMusicClient(BaseMusicClient):
     '''_parsewiththirdpartapis'''
     def _parsewiththirdpartapis(self, search_result: dict, request_overrides: dict = None):
         if (cookies := self.default_cookies or request_overrides.get('cookies')) and (cookies != DEFAULT_COOKIES): return SongInfo(source=self.source, raw_data={'quality': MUSIC_QUALITIES[-1]})
-        for parser_func in [self._parsewithxiaoqinapi, self._parsewithcggapi, self._parsewithxingmianapi, self._parsewithhaitangwapi, self._parsewithrrvennapi, self._parsewithxuanluogeapi, self._parsewithznnuapi, self._parsewithbugpkapi, self._parsewithjfjtapi, self._parsewithguyueiapi, self._parsewithmanshuoapi, self._parsewithcunyuapi, self._parsewithyutangxiaowuapi, self._parsewithnycnmbyfunsapi, self._parsewithceseetapi, self._parsewithxiaotapi, self._parsewithxcvtsapi, self._parsewithxianyuwapi, self._parsewithcyruiapi, self._parsewithtmetuapi]:
+        for parser_func in [self._parsewithxiaoqinapi, self._parsewithcggapi, self._parsewithxingmianapi, self._parsewithhaitangwapi, self._parsewithcunyuapi, self._parsewithyutangxiaowuapi, self._parsewithxiaotapi, self._parsewithxcvtsapi, self._parsewithnycnmbyfunsapi, self._parsewithceseetapi, self._parsewithxianyuwapi,
+                            self._parsewithxuanluogeapi, self._parsewithrrvennapi, self._parsewithznnuapi, self._parsewithcyruiapi, self._parsewithtmetuapi, self._parsewithjfjtapi, self._parsewithbugpkapi, self._parsewithguyueiapi, self._parsewithmanshuoapi,]:  # invalid apis (test at 2026/05/19)
             song_info_flac = SongInfo(source=self.source, raw_data={'search': search_result, 'download': {}, 'lyric': {}, 'quality': MUSIC_QUALITIES[-1]})
             with suppress(Exception): song_info_flac = parser_func(search_result, request_overrides)
             if song_info_flac.with_valid_download_url and song_info_flac.ext in AudioLinkTester.VALID_AUDIO_EXTS: break
