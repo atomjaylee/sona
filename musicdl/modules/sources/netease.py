@@ -52,7 +52,7 @@ class NeteaseMusicClient(BaseMusicClient):
         while self.search_size_per_source > count:
             (page_rule := copy.deepcopy(default_rule))['limit'] = page_size
             page_rule['offset'] = int(count // page_size) * page_size
-            search_urls.append({'url': base_url, 'data': page_rule})
+            search_urls.append({'url': base_url, 'data': page_rule, 'page': int(count // page_size) + 1})
             count += page_size
         # return
         return search_urls
@@ -579,12 +579,15 @@ class NeteaseMusicClient(BaseMusicClient):
     def _search(self, keyword: str = '', search_url: dict = {}, request_overrides: dict = None, song_infos: list = [], progress: Progress = None, progress_id: int = 0):
         # init
         request_overrides, lossless_quality_is_sufficient = request_overrides or {}, False if (cookies := self.default_cookies or request_overrides.get('cookies')) and (cookies != DEFAULT_COOKIES) else True
-        search_meta = copy.deepcopy(search_url); search_url = search_meta.pop('url')
+        search_meta = copy.deepcopy(search_url); search_url, page_no = search_meta.pop('url'), search_meta.pop('page')
         # successful
         try:
             # --search results
             (resp := self.post(search_url, **search_meta, **request_overrides)).raise_for_status()
-            for search_result in resp2json(resp)['result']['songs']:
+            task_id = progress.add_task(f"{self.source}._search >>> Start to process the 0th search result on page {page_no}", total=self.search_size_per_page if self.strict_limit_search_size_per_page else len(resp2json(resp)['result']['songs']), completed=0)
+            for search_result_idx, search_result in enumerate(resp2json(resp)['result']['songs']):
+                # --update progress
+                progress.update(task_id, description=f'{self.source}._search >>> Start to process the {search_result_idx+1}th search result on page {page_no}', completed=(len(song_infos) + 1) if self.strict_limit_search_size_per_page else (search_result_idx + 1))
                 # --init song info
                 song_info = SongInfo(source=self.source, raw_data={'search': search_result, 'download': {}, 'lyric': {}, 'quality': MUSIC_QUALITIES[-1]})
                 # --parse with third part apis
