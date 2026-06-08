@@ -107,7 +107,7 @@ class QQMusicClient(BaseMusicClient):
         request_overrides, song_id = request_overrides or {}, search_result.get('mid') or search_result.get('songmid')
         if not safeextractfromdict(search_result, ['album', 'title'], None) or search_result.get('albumname'): search_result.update(self._getsongmetainfo(song_id=song_id, request_overrides=request_overrides))
         # parse (the card id should be applied by yourselves, each card can be used for 1 day)
-        for music_quality in MUSIC_QUALITIES:
+        for music_quality in MUSIC_QUALITIES[:4]:
             (resp := requests.get(f"http://api.liuyunidc.cn/baimusic/musicurl.php?source=tx&musicId={song_id}&quality={music_quality}&card=BAI-SVJIVTCWJVELNZDT9P35", headers=headers, timeout=10, **request_overrides)).raise_for_status()
             if not (download_url := safeextractfromdict((download_result := resp2json(resp=resp)), ['url'], None)) or not str(download_url).startswith('http'): break
             download_url_status: dict = self.audio_link_tester.test(url=download_url, request_overrides=request_overrides, renew_session=True)
@@ -191,8 +191,9 @@ class QQMusicClient(BaseMusicClient):
         if not safeextractfromdict(search_result, ['album', 'title'], None) or search_result.get('albumname'): search_result.update(self._getsongmetainfo(song_id=song_id, request_overrides=request_overrides))
         # parse
         for music_quality in MUSIC_QUALITIES:
-            (resp := self.get(f"https://lxmusicapi.onrender.com/url/tx/{song_id}/{music_quality}", headers=headers, timeout=10, **request_overrides)).raise_for_status()
-            if not (download_url := safeextractfromdict((download_result := resp2json(resp=resp)), ['url'], None)) or not str(download_url).startswith('http'): continue
+            (resp := requests.get(f"https://lxmusicapi.onrender.com/url/tx/{song_id}/{music_quality}", headers=headers, timeout=10, **request_overrides)).raise_for_status()
+            if not (download_url := safeextractfromdict((download_result := resp2json(resp=resp)), ['url'], None)) or not str(download_url).startswith('http'): break
+            if '无法获取' in str(download_result.get('msg')) or 'http://panspace.kuwo.cn/' in download_url: break 
             download_url_status: dict = self.audio_link_tester.test(url=download_url, request_overrides=request_overrides, renew_session=True)
             song_info = SongInfo(
                 raw_data={'search': search_result, 'download': download_result, 'lyric': {}}, source=self.source, song_name=legalizestring(search_result.get('title') or search_result.get('songname')), singers=legalizestring(', '.join([singer.get('name') for singer in (search_result.get('singer', []) or []) if isinstance(singer, dict) and singer.get('name')])), album=legalizestring(safeextractfromdict(search_result, ['album', 'title'], None) or search_result.get('albumname')), ext=download_url_status['ext'], file_size_bytes=download_url_status['file_size_bytes'], 
@@ -270,7 +271,8 @@ class QQMusicClient(BaseMusicClient):
         request_overrides, song_id, song_info = request_overrides or {}, search_result.get('mid') or search_result.get('songmid'), SongInfo(source=self.source)
         if not safeextractfromdict(search_result, ['album', 'title'], None) or search_result.get('albumname'): search_result.update(self._getsongmetainfo(song_id=song_id, request_overrides=request_overrides))
         # parse
-        (resp := self.get(f'https://api.xunhuisi.store/API/QQMusic/Song.php?mid={song_id}&type=json', **request_overrides)).raise_for_status()
+        headers = {"user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",}
+        (resp := requests.get(f'https://api.xunhuisi.store/API/QQMusic/Song.php?mid={song_id}&type=json', headers=headers, timeout=10, **request_overrides)).raise_for_status()
         if not (download_url := (download_result := resp2json(resp=resp))['music_url']) or not str(download_url).startswith('http'): return song_info
         download_url_status: dict = self.audio_link_tester.test(url=download_url, request_overrides=request_overrides, renew_session=True)
         lyric = cleanlrc(safeextractfromdict(download_result, ['lyric'], '') or 'NULL')
@@ -303,7 +305,8 @@ class QQMusicClient(BaseMusicClient):
         request_overrides, song_id, song_info = request_overrides or {}, search_result.get('mid') or search_result.get('songmid'), SongInfo(source=self.source)
         if not safeextractfromdict(search_result, ['album', 'title'], None) or search_result.get('albumname'): search_result.update(self._getsongmetainfo(song_id=song_id, request_overrides=request_overrides))
         # parse
-        (resp := self.get(f'https://cyapi.top/API/qq_music.php', params={"apikey": random.choice(REQUEST_KEYS), "type": "json", "mid": song_id, "quality": "lossless"}, **request_overrides)).raise_for_status()
+        headers = {"user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",}
+        (resp := requests.get(f'https://cyapi.top/API/qq_music.php', params={"apikey": random.choice(REQUEST_KEYS), "type": "json", "mid": song_id, "quality": "lossless"}, headers=headers, timeout=10, **request_overrides)).raise_for_status()
         if not (download_url := (download_result := resp2json(resp=resp))['url']) or not str(download_url).startswith('http'): return song_info
         download_url_status: dict = self.audio_link_tester.test(url=download_url, request_overrides=request_overrides, renew_session=True)
         lyric = cleanlrc(safeextractfromdict(download_result, ['lyric', 'text'], '') or 'NULL')
