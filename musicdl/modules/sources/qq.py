@@ -280,8 +280,8 @@ class QQMusicClient(BaseMusicClient):
         if self.default_cookies or (request_overrides := request_overrides or {}).get('cookies'): return SongInfo(source=self.source)
         l1_parser_funcs = [self._parsewithxcvtsapi, self._parsewithvkeysapi, ] # svip
         l2_parser_funcs = [self._parsewithnkiapi, self._parsewithtangapi, self._parsewith317akapi, ] # vip
-        l3_parser_funcs = [self._parsewithcyapi, self._parsewithxunhuisiapi, ] # vip account but only mp3 or m4a files can be requested
-        l4_parser_funcs = [self._parsewithliuyunidcapi, self._parsewithxianyuwapi, self._parsewithlpzapi, self._parsewithlxmusicapi, ] # invalid or unstable accounts
+        l3_parser_funcs = [self._parsewithcyapi, self._parsewithxunhuisiapi, self._parsewithlxmusicapi, ] # vip account but only mp3 or m4a files can be requested
+        l4_parser_funcs = [self._parsewithliuyunidcapi, self._parsewithxianyuwapi, self._parsewithlpzapi, ] # invalid or unstable accounts
         for parser_func in (l1_parser_funcs + l2_parser_funcs + l3_parser_funcs + l4_parser_funcs):
             song_info_flac = SongInfo(source=self.source, raw_data={'search': search_result, 'download': {}, 'lyric': {}})
             with suppress(Exception): song_info_flac = parser_func(search_result, request_overrides)

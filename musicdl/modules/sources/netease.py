@@ -15,6 +15,7 @@ import time
 import base64
 import random
 import hashlib
+import requests
 import warnings
 import json_repair
 from contextlib import suppress
@@ -178,14 +179,15 @@ class NeteaseMusicClient(BaseMusicClient):
         HMAC_SECRET_KEY, BASE_URL = b"a09d0f3700a279584e1515354fbe08a7ee1c617f919543142fa625b82f1b5ad0", "https://music.znnu.com"
         request_overrides, song_id, random_ip = request_overrides or {}, search_result['id'], RandomIPGenerator().ipv4()
         generate_signature_func = lambda params, timestamp, domain="music.znnu.com": hmac.new(HMAC_SECRET_KEY, (str(timestamp) + domain + "".join(f"{k}={v}" for k, v in sorted(((k, v) for k, v in params.items() if k not in {'signature', 'timestamp', 'domain', 'ver'}), key=lambda item: item[0]))).encode("utf-8"), hashlib.sha256).hexdigest()
-        (resp := self.get(f"{BASE_URL}/api/key", timeout=10, **request_overrides)).raise_for_status()
+        headers = {"user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",}
+        (resp := requests.get(f"{BASE_URL}/api/key", timeout=10, headers=headers, **request_overrides)).raise_for_status()
         key_token, b64_key = resp2json(resp=resp)['data']['keyToken'], resp2json(resp=resp)['data']['key']
-        headers = {"x-key-token": key_token, "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36", "Referer": f"{BASE_URL}/"}
+        headers = {"X-Key-Token": key_token, "X-Referer": "musicParser", "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36", "Referer": f"{BASE_URL}/", "Origin": BASE_URL, "Content-Type": "application/x-www-form-urlencoded",}
         # parse
         for music_quality in MUSIC_QUALITIES:
-            timestamp, domain, params = int(time.time()), "music.znnu.com", {"act": "song", "id": str(song_id), "level": music_quality, "ip": random_ip}
+            timestamp, domain, params = int(time.time()), "music.znnu.com", {"act": "song", "id": str(song_id), "level": music_quality, "rawInput": f"https://music.163.com/#/song?id={song_id}", "ip": random_ip}
             (payload := params.copy()).update({"timestamp": timestamp, "domain": domain, "signature": generate_signature_func(params, timestamp, domain)})
-            (resp := self.post(f"{BASE_URL}/api/song", headers=headers, data=payload, **request_overrides)).raise_for_status()
+            (resp := requests.post(f"{BASE_URL}/api/song", headers=headers, data=payload, **request_overrides)).raise_for_status()
             iv, ciphertext, tag, key = base64.b64decode((enc_data := (download_result := resp2json(resp=resp))['data'])['iv']), base64.b64decode(enc_data['ciphertext']), base64.b64decode(enc_data['tag']), base64.b64decode(b64_key)
             download_result = json_repair.loads(AESGCM(key).decrypt(nonce=iv, data=ciphertext + tag, associated_data=None).decode('utf-8'))
             if not (download_url := safeextractfromdict(download_result, ['url'], '')) or not str(download_url).startswith('http'): continue
@@ -227,9 +229,10 @@ class NeteaseMusicClient(BaseMusicClient):
     def _parsewithbugpkapi(self, search_result: dict, request_overrides: dict = None):
         # init
         request_overrides, song_id = request_overrides or {}, search_result['id']
+        headers = {"user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",}
         # parse
         for music_quality in MUSIC_QUALITIES:
-            (resp := self.get(f'https://api.bugpk.com/api/163_music?ids={song_id}&level={music_quality}&type=json', timeout=10, **request_overrides)).raise_for_status()
+            (resp := requests.get(f'https://api.bugpk.com/api/163_music?ids={song_id}&level={music_quality}&type=json', headers=headers, timeout=10, **request_overrides)).raise_for_status()
             if not (download_url := safeextractfromdict((download_result := resp2json(resp=resp)), ['url'], '')) or not str(download_url).startswith('http'): continue
             download_url_status: dict = self.audio_link_tester.test(url=download_url, request_overrides=request_overrides, renew_session=True)
             duration_in_secs = extractdurationsecondsfromlrc((lyric := cleanlrc(download_result.get('lyric') or '')))
