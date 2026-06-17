@@ -9,6 +9,7 @@ WeChat Official Account (微信公众号):
 import os
 import re
 import copy
+import time
 import base64
 import random
 import requests
@@ -20,6 +21,7 @@ from .base import BaseMusicClient
 from rich.progress import Progress
 from pathvalidate import sanitize_filepath
 from ..utils.spotifyutils import SpotubeSecureClient
+from urllib.parse import urlencode, urlunsplit, parse_qsl, urlsplit
 from ..utils.youtubeutils import YouTube, Stream as YouTubeStreamObj, REPAIDAPI_KEYS
 from ..utils import legalizestring, resp2json, usesearchheaderscookies, usedownloadheaderscookies, safeextractfromdict, SongInfo, SongInfoUtils, AudioLinkTester, LyricSearchClient, IOUtils
 
@@ -176,6 +178,48 @@ class YouTubeMusicClient(BaseMusicClient):
         song_info.cover_url = song_info.cover_url[-1]['url'] if isinstance(song_info.cover_url, (list, tuple)) else song_info.cover_url
         # return
         return song_info
+    '''_parsewithy2matenuapi'''
+    def _parsewithy2matenuapi(self, search_result: dict, request_overrides: dict = None):
+        # init
+        request_overrides, song_id, song_info = request_overrides or {}, search_result['videoId'], SongInfo(source=self.source)
+        to_seconds_func = lambda x: (lambda s: 0 if not s else (lambda p: p[-3]*3600+p[-2]*60+p[-1] if len(p)>=3 else p[0]*60+p[1] if len(p)==2 else p[0] if len(p)==1 else 0)([int(v) for v in re.findall(r'\d+', s.replace('：', ':'))]) if (':' in s or '：' in s) else (lambda h,m,sec,num: (lambda tot: tot if tot>0 else num)(h*3600+m*60+sec))(int(mo.group(1)) if (mo:=re.search(r'(\d+)\s*(?:小时|时|h|hr)', s)) else 0, int(mo.group(1)) if (mo:=re.search(r'(\d+)\s*(?:分钟|分|m|min)', s)) else 0, (int(mo.group(1)) if (mo:=re.search(r'(\d+)\s*(?:秒|s|sec)', s)) else (int(mo.group(1)) if (mo:=re.search(r'(?:分钟|分|m|min)\s*(\d+)\b', s)) else 0)), int(mo.group(0)) if (mo:=re.search(r'\d+', s)) else 0))(str(x).strip().lower())
+        add_params_func, ts_func = lambda url, params: (lambda parts, query: urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode({**query, **params}), parts.fragment)))(urlsplit(url), dict(parse_qsl(urlsplit(str(url)).query, keep_blank_values=True))), lambda: str(int(time.time() * 1000))
+        strip_params_func = lambda url: (lambda parts, query: urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode({k: v for k, v in query.items() if k not in {'v', 'f', '_'}}), parts.fragment)))(urlsplit(url), dict(parse_qsl(urlsplit(str(url)).query, keep_blank_values=True)))
+        auth_url, init_url = "https://eta.etacloud.org/api/v1/auth", "https://eta.etacloud.org/api/v1/init"
+        base_headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36", "Accept": "*/*", "Accept-Language": "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7", "Origin": "https://v3.y2mate.nu", "Referer": "https://v3.y2mate.nu/"}
+        if not search_result.get('title'): search_result.update(self._getsongmetainfo(song_id=song_id, request_overrides=request_overrides))
+        # parse
+        # --auth
+        download_result = {}; (resp := requests.get(auth_url, headers=base_headers, params={"_": ts_func()}, **request_overrides)).raise_for_status()
+        download_result['auth'] = resp2json(resp=resp); key = download_result['auth'].get('key')
+        # --init
+        init_headers = base_headers.copy(); init_headers["Authorization"] = f"Bearer {key}"
+        (resp := requests.get(init_url, headers=init_headers, params={"_": ts_func()}, **request_overrides)).raise_for_status()
+        download_result['init'] = resp2json(resp=resp); convert_url = download_result['init'].get('convertURL')
+        # --convert
+        convert_url = add_params_func(strip_params_func(convert_url), {"v": song_id, "f": "mp3", "_": ts_func()})
+        (resp := requests.get(convert_url, headers=base_headers, **request_overrides)).raise_for_status(); download_result['convert'] = resp2json(resp=resp)
+        if download_result['convert'].get('redirect') == 1 and download_result['convert'].get('redirectURL'):
+            redirect_url = add_params_func(strip_params_func(download_result['convert']['redirectURL']), {"v": song_id, "f": "mp3", "_": ts_func()})
+            (resp := requests.get(redirect_url, headers=base_headers, **request_overrides)).raise_for_status()
+            download_result['redirect_convert'] = resp2json(resp=resp); download_result['convert'] = download_result['redirect_convert']
+        # --download
+        download_url = download_result['convert'].get('downloadURL'); download_url = add_params_func(download_url, {"v": song_id, "f": "mp3", "r": "v3.y2mate.nu"}); download_result['download_url'] = download_url
+        download_headers = {"User-Agent": base_headers["User-Agent"], "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8", "Accept-Language": base_headers["Accept-Language"], "Referer": "https://v3.y2mate.nu/"}
+        (resp := requests.get(download_url, headers=download_headers, **request_overrides)).raise_for_status()
+        # --status
+        download_url_status: dict = self.audio_link_tester.test(url=download_url, request_overrides=request_overrides, renew_session=True)
+        if download_url_status.get('file_size') in {'NULL', None}: download_url_status['file_size_bytes'] = len(resp.content); download_url_status['file_size'] = SongInfoUtils.byte2mb(len(resp.content))
+        if not download_url_status.get('ext'): download_url_status['ext'] = 'mp3'
+        # --song info
+        duration_in_secs = int(float(search_result.get('duration_seconds', 0) or 0)) or to_seconds_func(search_result.get('duration') or search_result.get('length') or '0:00')
+        song_info = SongInfo(
+            raw_data={'search': search_result, 'download': download_result, 'lyric': {}}, source=self.source, song_name=legalizestring(search_result.get('title')), singers=legalizestring(search_result.get('author') or (', '.join([singer.get('name') for singer in (search_result.get('artists') or []) if isinstance(singer, dict) and singer.get('name')]))), album=legalizestring(safeextractfromdict(search_result, ['album', 'name'], None) or search_result.get('album')), ext=download_url_status['ext'], file_size_bytes=download_url_status['file_size_bytes'], 
+            file_size=download_url_status['file_size'], identifier=song_id, duration_s=duration_in_secs, duration=SongInfoUtils.seconds2hms(duration_in_secs), lyric=None, cover_url=search_result.get('thumbnail') or safeextractfromdict(search_result, ['thumbnails', -1, 'url'], None), download_url=download_url_status['download_url'], download_url_status=download_url_status, downloaded_contents=resp.content, default_download_headers=self.default_download_headers,
+        )
+        song_info.cover_url = song_info.cover_url[-1]['url'] if isinstance(song_info.cover_url, (list, tuple)) else song_info.cover_url
+        # return
+        return song_info
     '''_parsewithyt1dapi'''
     def _parsewithyt1dapi(self, search_result: dict, request_overrides: dict = None):
         # init
@@ -211,7 +255,7 @@ class YouTubeMusicClient(BaseMusicClient):
     '''_parsewiththirdpartapis'''
     def _parsewiththirdpartapis(self, search_result: dict, request_overrides: dict = None):
         if self.default_cookies or request_overrides.get('cookies'): return SongInfo(source=self.source)
-        for parser_func in [self._parsewithy2mateapi, self._parsewithmp3youtube, self._parsewithspotubedlapi, self._parsewithacethinker, self._parsewithyt1dapi]:
+        for parser_func in [self._parsewithy2mateapi, self._parsewithmp3youtube, self._parsewithspotubedlapi, self._parsewithy2matenuapi, self._parsewithacethinker, self._parsewithyt1dapi]:
             song_info_flac = SongInfo(source=self.source, raw_data={'search': search_result, 'download': {}, 'lyric': {}})
             with suppress(Exception): song_info_flac = parser_func(search_result, request_overrides)
             if song_info_flac.with_valid_download_url and song_info_flac.ext in AudioLinkTester.VALID_AUDIO_EXTS: break
