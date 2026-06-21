@@ -9,16 +9,14 @@ WeChat Official Account (微信公众号):
 import os
 import copy
 import time
-import hashlib
 import tempfile
 import requests
 from contextlib import suppress
 from .base import BaseMusicClient
 from ..utils.hosts import QOBUZ_MUSIC_HOSTS
 from ..utils.qobuzutils import QobuzMusicClientUtils
+from urllib.parse import urlencode, urlparse, parse_qs
 from pathvalidate import sanitize_filepath, sanitize_filename
-from urllib.parse import urlencode, urlparse, parse_qs, quote
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from rich.progress import Progress, TextColumn, BarColumn, TimeRemainingColumn, MofNCompleteColumn
 from ..utils import legalizestring, resp2json, usesearchheaderscookies, safeextractfromdict, hostmatchessuffix, obtainhostname, useparseheaderscookies, usedownloadheaderscookies, SongInfo, AudioLinkTester, LyricSearchClient, IOUtils, SongInfoUtils
 
@@ -80,23 +78,6 @@ class QobuzMusicClient(BaseMusicClient):
             count += page_size
         # return
         return search_urls
-    '''_parsewithdabyeetsuapi'''
-    def _parsewithdabyeetsuapi(self, search_result: dict, request_overrides: dict = None):
-        # init
-        request_overrides, song_id, headers = request_overrides or {}, str(search_result['id']), {"user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",}
-        # parse
-        for music_quality in QobuzMusicClientUtils.MUSIC_QUALITIES:
-            (resp := requests.get(f"https://dab.yeet.su/api/stream?trackId={song_id}&quality={music_quality}", headers=headers, timeout=10, **request_overrides)).raise_for_status()
-            if not (download_url := safeextractfromdict((download_result := resp2json(resp=resp)), ['url'], '')) or not str(download_url).startswith('http'): continue
-            real_music_quality = real_music_quality[0] if isinstance((real_music_quality := parse_qs(urlparse(str(download_url)).query, keep_blank_values=True).get('fmt') or music_quality), list) else real_music_quality
-            download_url_status: dict = self.audio_link_tester.test(url=download_url, request_overrides=request_overrides, renew_session=True)
-            song_info = SongInfo(
-                raw_data={'search': search_result, 'download': download_result, 'lyric': {}, 'quality': real_music_quality}, source=self.source, song_name=legalizestring(search_result.get('title')), singers=legalizestring(safeextractfromdict(search_result, ['performer', 'name'], None)), album=legalizestring(safeextractfromdict(search_result, ['album', 'title'], None)), ext=download_url_status['ext'], file_size_bytes=download_url_status['file_size_bytes'], 
-                file_size=download_url_status['file_size'], identifier=song_id, duration_s=int(float(search_result.get('duration') or 0)), duration=SongInfoUtils.seconds2hms(int(float(search_result.get('duration') or 0))), lyric=None, cover_url=safeextractfromdict(search_result, ['album', 'image', 'large'], None), download_url=download_url_status['download_url'], download_url_status=download_url_status, 
-            )
-            if song_info.with_valid_download_url and song_info.ext in AudioLinkTester.VALID_AUDIO_EXTS: break
-        # return
-        return song_info
     '''_parsewithzarzqbzapi'''
     def _parsewithzarzqbzapi(self, search_result: dict, request_overrides: dict = None):
         # init
@@ -129,10 +110,25 @@ class QobuzMusicClient(BaseMusicClient):
         )
         # return
         return song_info
+    '''_parsewithspotbyeqzzapi'''
+    def _parsewithspotbyeqzzapi(self, search_result: dict, request_overrides: dict = None):
+        # init
+        request_overrides, song_id, headers = request_overrides or {}, str(search_result['id']), {"User-Agent": "SpotiFLAC/1.0.0", "Accept": "application/json", "Content-Type": "application/json", "x-api-key": "explore-obscure-chivalry-travesty-blinks"}
+        # parse
+        (resp := requests.post("https://qbz-foss.spotbye.qzz.io/api/dl", json={"quality": "24", "id": song_id}, headers=headers, timeout=10, allow_redirects=False, **request_overrides)).raise_for_status()
+        download_url = safeextractfromdict((download_result := resp2json(resp=resp)), ['url'], '')
+        real_music_quality = real_music_quality[0] if isinstance((real_music_quality := parse_qs(urlparse(str(download_url)).query, keep_blank_values=True).get('fmt') or QobuzMusicClientUtils.MUSIC_QUALITIES[0]), list) else real_music_quality
+        download_url_status: dict = self.audio_link_tester.test(url=download_url, request_overrides=request_overrides, renew_session=True)
+        song_info = SongInfo(
+            raw_data={'search': search_result, 'download': download_result, 'lyric': {}, 'quality': real_music_quality}, source=self.source, song_name=legalizestring(search_result.get('title')), singers=legalizestring(safeextractfromdict(search_result, ['performer', 'name'], None)), album=legalizestring(safeextractfromdict(search_result, ['album', 'title'], None)), ext=download_url_status['ext'], file_size_bytes=download_url_status['file_size_bytes'], 
+            file_size=download_url_status['file_size'], identifier=song_id, duration_s=int(float(search_result.get('duration') or 0)), duration=SongInfoUtils.seconds2hms(int(float(search_result.get('duration') or 0))), lyric=None, cover_url=safeextractfromdict(search_result, ['album', 'image', 'large'], None), download_url=download_url_status['download_url'], download_url_status=download_url_status, 
+        )
+        # return
+        return song_info
     '''_parsewiththirdpartapis'''
     def _parsewiththirdpartapis(self, search_result: dict, request_overrides: dict = None):
         if QobuzMusicClientUtils.get_token_func(self.default_headers, "X-User-Auth-Token", "x-user-auth-token"): return SongInfo(source=self.source, raw_data={'quality': QobuzMusicClientUtils.MUSIC_QUALITIES[-1]})
-        for parser_func in [self._parsewithzarzqbzapi, self._parsewithzarzqbz2api]:
+        for parser_func in [self._parsewithzarzqbzapi, self._parsewithzarzqbz2api, self._parsewithspotbyeqzzapi]:
             song_info_flac = SongInfo(source=self.source, raw_data={'search': search_result, 'download': {}, 'lyric': {}, 'quality': QobuzMusicClientUtils.MUSIC_QUALITIES[-1]})
             with suppress(Exception): song_info_flac = parser_func(search_result, request_overrides)
             if song_info_flac.with_valid_download_url and song_info_flac.ext in AudioLinkTester.VALID_AUDIO_EXTS: break
