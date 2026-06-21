@@ -88,6 +88,45 @@ class DeezerMusicClient(BaseMusicClient):
         )
         # return
         return song_info
+    '''_parsewithmusicfabapi'''
+    def _parsewithmusicfabapi(self, search_result: dict, request_overrides: dict = None):
+        # init
+        request_overrides, song_id, headers = request_overrides or {}, str(search_result.get('id') or search_result.get('SNG_ID')), {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36", "Content-Type": "application/json", "Accept": "application/json", "Referer": "https://musicfab.io/deezer-to-mp3/", "Origin": "https://musicfab.io"}
+        # parse
+        download_result, payload = self._getsongmetainfo(song_id=song_id, request_overrides=request_overrides), {"url": f"https://www.deezer.com/en/track/{song_id}"}
+        (resp := requests.post("https://musicfab.io/api/deezer", json=payload, headers=headers, timeout=20, **request_overrides)).raise_for_status(); download_result['track_details'] = resp2json(resp=resp)
+        download_url = safeextractfromdict(download_result['track_details'], ['data', 'metadata', 'download'], '')
+        with suppress(Exception): duration_in_secs = 0; duration_in_secs = float(safeextractfromdict(download_result, ['results', 'DURATION'], 0) or download_result.get('duration', 0) or 0)
+        download_url_status: dict = self.audio_link_tester.test(url=download_url, request_overrides=request_overrides, renew_session=True)
+        song_info = SongInfo(
+            raw_data={'search': search_result, 'download': download_result, 'lyric': {}, 'id': song_id}, source=self.source, song_name=legalizestring(safeextractfromdict(download_result, ['results', 'SNG_TITLE'], None) or download_result.get('title')), singers=legalizestring(safeextractfromdict(download_result, ['results', 'ART_NAME'], None) or safeextractfromdict(download_result, ['artist', 'name'], None)), album=legalizestring(safeextractfromdict(download_result, ['results', 'ALB_TITLE'], None) or safeextractfromdict(download_result, ['album', 'title'], None)), 
+            ext=download_url_status['ext'], file_size_bytes=download_url_status['file_size_bytes'], file_size=download_url_status['file_size'], identifier=str(song_id), duration_s=duration_in_secs, duration=SongInfoUtils.seconds2hms(duration_in_secs), lyric=None, cover_url=DeezerMusicClientUtils.getcoverurl(safeextractfromdict(download_result, ['results', 'ALB_PICTURE'], None)) or safeextractfromdict(download_result, ['album', 'cover_xl'], None), download_url=download_url_status['download_url'], download_url_status=download_url_status, 
+        )
+        # return
+        return song_info
+    '''_parsewithflacdownloaderapi'''
+    def _parsewithflacdownloaderapi(self, search_result: dict, request_overrides: dict = None):
+        # init
+        PREPARE_URL = "https://flacdownloader.com/prepare"; ASSET_URL = "https://flacdownloader.com/asset"
+        request_overrides, song_id, headers = request_overrides or {}, str(search_result.get('id') or search_result.get('SNG_ID')), {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36", "Accept": "application/json", "Referer": "https://flacdownloader.com/it/download"}
+        # parse
+        (resp := requests.get(PREPARE_URL, headers=headers, timeout=20, **request_overrides)).raise_for_status(); token = resp2json(resp=resp).get("t")
+        download_result = self._getsongmetainfo(song_id=song_id, request_overrides=request_overrides)
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36", "Accept": "application/json", "Content-Type": "application/json", "Referer": "https://flacdownloader.com/it/download", "X-Dl-Token": token,}
+        payload = {
+            "url": f"https://www.deezer.com/track/{song_id}", "title": safeextractfromdict(download_result, ['results', 'SNG_TITLE'], None) or download_result.get('title'),
+            "artist": safeextractfromdict(download_result, ['results', 'ART_NAME'], None) or safeextractfromdict(download_result, ['artist', 'name'], None), "format": "flac",
+        }
+        (resp := requests.post(ASSET_URL, headers=headers, json=payload, timeout=20, **request_overrides)).raise_for_status()
+        download_result['track_details'] = resp2json(resp=resp); download_url = safeextractfromdict(download_result['track_details'], ['u'], '')
+        download_url_status: dict = self.audio_link_tester.test(url=download_url, request_overrides=request_overrides, renew_session=True)
+        with suppress(Exception): duration_in_secs = 0; duration_in_secs = float(safeextractfromdict(download_result, ['results', 'DURATION'], 0) or download_result.get('duration', 0) or 0)
+        song_info = SongInfo(
+            raw_data={'search': search_result, 'download': download_result, 'lyric': {}, 'id': song_id}, source=self.source, song_name=legalizestring(safeextractfromdict(download_result, ['results', 'SNG_TITLE'], None) or download_result.get('title')), singers=legalizestring(safeextractfromdict(download_result, ['results', 'ART_NAME'], None) or safeextractfromdict(download_result, ['artist', 'name'], None)), album=legalizestring(safeextractfromdict(download_result, ['results', 'ALB_TITLE'], None) or safeextractfromdict(download_result, ['album', 'title'], None)), 
+            ext=download_url_status['ext'], file_size_bytes=download_url_status['file_size_bytes'], file_size=download_url_status['file_size'], identifier=str(song_id), duration_s=duration_in_secs, duration=SongInfoUtils.seconds2hms(duration_in_secs), lyric=None, cover_url=DeezerMusicClientUtils.getcoverurl(safeextractfromdict(download_result, ['results', 'ALB_PICTURE'], None)) or safeextractfromdict(download_result, ['album', 'cover_xl'], None), download_url=download_url_status['download_url'], download_url_status=download_url_status, 
+        )
+        # return
+        return song_info
     '''_parsewithdeemixerapi'''
     def _parsewithdeemixerapi(self, search_result: dict, request_overrides: dict = None):
         # init
@@ -110,7 +149,7 @@ class DeezerMusicClient(BaseMusicClient):
     '''_parsewiththirdpartapis'''
     def _parsewiththirdpartapis(self, search_result: dict, request_overrides: dict = None):
         if self.default_cookies: return SongInfo(source=self.source)
-        for parser_func in [self._parsewithzarzapi, self._parsewithdeemixerapi]:
+        for parser_func in [self._parsewithzarzapi, self._parsewithflacdownloaderapi, self._parsewithdeemixerapi, self._parsewithmusicfabapi]:
             song_info_flac = SongInfo(source=self.source, raw_data={'search': search_result, 'download': {}, 'lyric': {}})
             with suppress(Exception): song_info_flac = parser_func(search_result, request_overrides)
             if song_info_flac.with_valid_download_url and song_info_flac.ext in AudioLinkTester.VALID_AUDIO_EXTS: break
