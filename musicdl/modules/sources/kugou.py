@@ -17,7 +17,6 @@ import requests
 import warnings
 import json_repair
 from contextlib import suppress
-from typing import TYPE_CHECKING
 from .base import BaseMusicClient
 from urllib.parse import urlencode
 from pathvalidate import sanitize_filepath
@@ -25,7 +24,7 @@ from ..utils.hosts import KUGOU_MUSIC_HOSTS
 from urllib.parse import urlparse, parse_qs, urljoin
 from ..utils.kugouutils import KugouMusicClientUtils, MUSIC_QUALITIES
 from rich.progress import Progress, TextColumn, BarColumn, TimeRemainingColumn, MofNCompleteColumn
-from ..utils import legalizestring, resp2json, usesearchheaderscookies, safeextractfromdict, optionalimport, useparseheaderscookies, obtainhostname, hostmatchessuffix, cleanlrc, SongInfo, AudioLinkTester, IOUtils, SongInfoUtils
+from ..utils import legalizestring, resp2json, usesearchheaderscookies, safeextractfromdict, useparseheaderscookies, obtainhostname, hostmatchessuffix, cleanlrc, SongInfo, AudioLinkTester, IOUtils, SongInfoUtils
 warnings.filterwarnings('ignore')
 
 

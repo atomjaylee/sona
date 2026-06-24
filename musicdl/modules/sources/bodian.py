@@ -71,9 +71,10 @@ class BodianMusicClient(BaseMusicClient):
         # init
         curl_cffi, request_overrides, song_id, song_info = optionalimport('curl_cffi'), request_overrides or {}, search_result['id'], SongInfo(source=self.source)
         if TYPE_CHECKING and curl_cffi is not None: import curl_cffi as curl_cffi
+        headers = {"user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",}
         # parse
         with suppress(Exception): (resp := curl_cffi.requests.get(f"https://kw-api.cenguigui.cn/?id={song_id}&type=song&level=lossless&format=json", timeout=10, impersonate="chrome131", verify=False, **request_overrides)).raise_for_status()
-        if not locals().get('resp') or not hasattr(locals().get('resp'), 'text'): (resp := self.get(f"https://kw-api.cenguigui.cn/?id={song_id}&type=song&level=lossless&format=json", timeout=10, **request_overrides)).raise_for_status()
+        if not locals().get('resp') or not hasattr(locals().get('resp'), 'text'): (resp := requests.get(f"https://kw-api.cenguigui.cn/?id={song_id}&type=song&level=lossless&format=json", headers=headers, timeout=10, verify=False, **request_overrides)).raise_for_status()
         if not (download_url := safeextractfromdict((download_result := resp2json(resp=resp)), ['data', 'url'], '')) or not str(download_url).startswith('http'): return song_info
         duration_in_secs = int(float(safeextractfromdict(download_result, ['data', 'duration'], 0) or 0))
         download_url_status: dict = self.audio_link_tester.test(url=download_url, request_overrides=request_overrides, renew_session=True)
