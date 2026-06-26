@@ -108,6 +108,11 @@ web/frontend/node_modules/
 web/static/
 web/musicdl_outputs/
 
+# 上面的 Python 模板规则 `lib/` 会误伤前端源码目录 web/frontend/src/lib（含 utils.ts），
+# 这里显式恢复跟踪，否则克隆后构建会报 Cannot find module './lib/utils'
+!web/frontend/src/lib/
+!web/frontend/src/lib/**
+
 # 下载产物（运行时数据，勿入库）
 /musicdl_outputs/
 
