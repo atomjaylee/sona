@@ -6,7 +6,7 @@ services:
     image: musicdl-web:latest
     container_name: musicdl-web
     ports:
-      - "8000:8000"
+      - "7701:8000"
     environment:
       # 用户数据（歌单 playlists.json）落盘目录，与下方卷映射保持一致
       MUSICDL_DATA_DIR: /app/data
