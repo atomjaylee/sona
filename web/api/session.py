@@ -24,6 +24,9 @@ SEARCH_SIZE_PER_PAGE = 2            # 每个分页（线程）解析的条数，
 SOURCE_THREADINGS = 8              # 每个源内部用于并行各分页的线程数
 SEARCH_CACHE_TTL = 300.0           # 关键词检索结果缓存秒数（同词重复检索秒回）
 SEARCH_SOURCE_TIMEOUT = 8.0        # 单个源检索超时秒数（超时则跳过该源，避免个别慢源拖死整体）
+# 专辑逐首解析超时：可解析的歌约 1~2s 出结果，完全受限的歌会把 ~28 个三方接口轮一遍（每个 10s，
+# 累计可达 80s+），导致前端「一直正在解析」。超过此秒数即视为该曲解析失败并跳过，保证整体不卡死。
+ALBUM_TRACK_TIMEOUT = 15.0
 
 
 def _song_id(source: str, identifier: Any) -> str:

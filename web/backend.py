@@ -12,12 +12,18 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from sse_starlette.sse import EventSourceResponse
 
+from concurrent.futures import ThreadPoolExecutor
+
 from .api import models, session
 from .api.playlists import store as playlist_store
-from .api.session import SEARCH_SOURCE_TIMEOUT
+from .api.session import ALBUM_TRACK_TIMEOUT, SEARCH_SOURCE_TIMEOUT
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
+
+# 专辑解析专用线程池：超时被放弃的曲目线程仍会在后台跑完（最长 ~80s），放在独立池里
+# 隔离，避免这些“僵尸”线程占满默认 executor 拖慢搜索等其它接口。
+_album_pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="album-resolve")
 
 app = FastAPI(title="musicdl web", version="1.0.0")
 
@@ -110,7 +116,16 @@ async def album_stream(album_id: str = Query(..., min_length=1), source: str | N
 
     async def resolve_one(index: int, track: dict):
         async with sem:
-            song = await asyncio.to_thread(session.resolve_album_track, source, track)
+            loop = asyncio.get_running_loop()
+            try:
+                # 逐首超时：可解析的歌 1~2s 即返回；完全受限的歌会一直轮三方接口，
+                # 超时即跳过（返回 None），保证流式解析整体不卡死（被放弃的线程在独立池里跑完）。
+                song = await asyncio.wait_for(
+                    loop.run_in_executor(_album_pool, session.resolve_album_track, source, track),
+                    timeout=ALBUM_TRACK_TIMEOUT,
+                )
+            except (asyncio.TimeoutError, Exception):
+                song = None
             return index, song
 
     async def event_gen():
