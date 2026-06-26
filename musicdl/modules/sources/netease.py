@@ -44,16 +44,16 @@ class NeteaseMusicClient(BaseMusicClient):
         self.default_download_cookies = self.default_download_cookies or DEFAULT_COOKIES
         self._initsession()
     '''_constructsearchurls'''
-    def _constructsearchurls(self, keyword: str, rule: dict = None, request_overrides: dict = None):
+    def _constructsearchurls(self, keyword: str, rule: dict = None, request_overrides: dict = None, page: int = 1):
         # init
         rule, request_overrides = rule or {}, request_overrides or {}
         (default_rule := {'s': keyword, 'type': 1, 'limit': 10, 'offset': 0}).update(rule)
-        # construct search urls
-        search_urls, page_size, count, base_url = [], self.search_size_per_page, 0, 'https://music.163.com/api/cloudsearch/pc'
+        # construct search urls (page>1 时按整页偏移取后续结果)
+        search_urls, page_size, count, base_url, base_offset = [], self.search_size_per_page, 0, 'https://music.163.com/api/cloudsearch/pc', (max(page, 1) - 1) * self.search_size_per_source
         while self.search_size_per_source > count:
             (page_rule := copy.deepcopy(default_rule))['limit'] = page_size
-            page_rule['offset'] = int(count // page_size) * page_size
-            search_urls.append({'url': base_url, 'data': page_rule, 'page': int(count // page_size) + 1})
+            page_rule['offset'] = int((base_offset + count) // page_size) * page_size
+            search_urls.append({'url': base_url, 'data': page_rule, 'page': int((base_offset + count) // page_size) + 1})
             count += page_size
         # return
         return search_urls
@@ -689,21 +689,70 @@ class NeteaseMusicClient(BaseMusicClient):
         # get tracks in playlist
         (resp := self.post('https://music.163.com/api/v6/playlist/detail', data={'id': playlist_id}, **request_overrides)).raise_for_status()
         tracks_in_playlist = (safeextractfromdict((playlist_result := resp2json(resp=resp)), ['playlist', 'trackIds'], []) or [])
-        # parse track by track in playlist
-        with Progress(TextColumn("{task.description}"), BarColumn(bar_width=None), MofNCompleteColumn(), TimeRemainingColumn(), refresh_per_second=10) as main_process_context:
-            main_progress_id = main_process_context.add_task(f"{len(tracks_in_playlist)} Songs Found in Playlist {playlist_id} >>> Completed (0/{len(tracks_in_playlist)}) SongInfo", total=len(tracks_in_playlist))
-            for idx, track_info in enumerate(tracks_in_playlist):
-                if idx > 0: main_process_context.advance(main_progress_id, 1); main_process_context.update(main_progress_id, description=f"{len(tracks_in_playlist)} Songs Found in Playlist {playlist_id} >>> Completed ({idx}/{len(tracks_in_playlist)}) SongInfo")
-                song_info = SongInfo(source=self.source, raw_data={'search': track_info, 'download': {}, 'lyric': {}, 'quality': MUSIC_QUALITIES[-1]})
-                song_info_flac = self._parsewiththirdpartapis(search_result=track_info, request_overrides=request_overrides)
-                lossless_quality_is_sufficient = False if (cookies := self.default_cookies or request_overrides.get('cookies')) and (cookies != DEFAULT_COOKIES) else True
-                with suppress(Exception): song_info = self._parsewithofficialapiv1(search_result=track_info, song_info_flac=song_info_flac, lossless_quality_is_sufficient=lossless_quality_is_sufficient, request_overrides=request_overrides)
-                if (song_info := song_info if song_info.with_valid_download_url else song_info_flac).with_valid_download_url: song_infos.append(song_info); continue
-                self.logger_handle.warning(f'Fail to parse song id {song_info.identifier} >>> {song_info.album} {song_info.song_name} {song_info.singers} {song_info.download_url}', disable_print=self.disable_print)
-            main_process_context.advance(main_progress_id, 1); main_process_context.update(main_progress_id, description=f"{len(tracks_in_playlist)} Songs Found in Playlist {playlist_id} >>> Completed ({idx+1}/{len(tracks_in_playlist)}) SongInfo")
+        # parse track by track in playlist (并行解析每首直链，大幅加速)
+        def _resolve_track(track_info):
+            song_info = SongInfo(source=self.source, raw_data={'search': track_info, 'download': {}, 'lyric': {}, 'quality': MUSIC_QUALITIES[-1]})
+            song_info_flac = self._parsewiththirdpartapis(search_result=track_info, request_overrides=request_overrides)
+            lossless_quality_is_sufficient = False if (cookies := self.default_cookies or request_overrides.get('cookies')) and (cookies != DEFAULT_COOKIES) else True
+            with suppress(Exception): song_info = self._parsewithofficialapiv1(search_result=track_info, song_info_flac=song_info_flac, lossless_quality_is_sufficient=lossless_quality_is_sufficient, request_overrides=request_overrides)
+            return song_info if song_info.with_valid_download_url else song_info_flac
+        song_infos = self._resolveplaylisttracks(tracks_in_playlist, _resolve_track, num_threadings=8, desc=f"Playlist {playlist_id}")
         # post processing
         playlist_name = legalizestring(safeextractfromdict(playlist_result, ['playlist', 'name'], None) or f"playlist-{playlist_id}")
         song_infos, work_dir = self._removeduplicates(song_infos=song_infos), self._constructuniqueworkdir(keyword=playlist_name)
+        for song_info in song_infos:
+            song_info.work_dir, episodes = work_dir, song_info.episodes if isinstance(song_info.episodes, list) else []
+            for eps_info in episodes: eps_info.work_dir = sanitize_filepath(os.path.join(work_dir, f"{song_info.song_name} - {song_info.singers}")); IOUtils.touchdir(eps_info.work_dir)
+        # return results
+        return song_infos
+    '''searchalbum: 按专辑名检索，返回专辑元数据列表（网易云，type=10 表示按专辑检索）'''
+    def searchalbum(self, keyword: str, limit: int = 20, request_overrides: dict = None) -> list:
+        # init
+        request_overrides, albums = request_overrides or {}, []
+        # search albums via cloudsearch endpoint
+        with suppress(Exception):
+            (resp := self.post('https://music.163.com/api/cloudsearch/pc', data={'s': keyword, 'type': 10, 'limit': limit, 'offset': 0}, **request_overrides)).raise_for_status()
+            for item in (safeextractfromdict(resp2json(resp=resp), ['result', 'albums'], []) or []):
+                if not isinstance(item, dict) or not item.get('id'): continue
+                singers = ', '.join([a.get('name', '') for a in (item.get('artists') or item.get('artist') or []) if isinstance(a, dict) and a.get('name')])
+                publish_time = ''
+                with suppress(Exception):
+                    if (pub := item.get('publishTime') or 0): publish_time = time.strftime('%Y-%m-%d', time.localtime(int(pub) / 1000))
+                albums.append({
+                    'album_id': str(item.get('id')), 'album_name': legalizestring(item.get('name') or ''), 'singers': legalizestring(singers),
+                    'cover_url': item.get('picUrl') or item.get('blurPicUrl') or '', 'song_count': int(item.get('size') or 0),
+                    'publish_time': publish_time, 'source': self.source,
+                })
+        # return
+        return albums
+    '''getalbumtracks: 取专辑原始曲目列表 + 专辑名（不解析直链，供流式逐首解析复用，网易云）'''
+    @useparseheaderscookies
+    def getalbumtracks(self, album_id: str, request_overrides: dict = None) -> tuple:
+        request_overrides, album_result = dict(request_overrides or {}), {}
+        with suppress(Exception):
+            (resp := self.get(f'https://music.163.com/api/v1/album/{album_id}', **request_overrides)).raise_for_status()
+            album_result = resp2json(resp=resp)
+        tracks_in_album = (safeextractfromdict(album_result, ['songs'], []) or [])
+        album_name = legalizestring(safeextractfromdict(album_result, ['album', 'name'], None) or f"album-{album_id}")
+        return tracks_in_album, album_name
+    '''resolvealbumtrack: 解析专辑内单首曲目直链，复用 search 同款官方/三方解析，返回 SongInfo（网易云）'''
+    def resolvealbumtrack(self, track_info: dict, request_overrides: dict = None) -> SongInfo:
+        request_overrides = dict(request_overrides or {})
+        lossless_quality_is_sufficient = False if (cookies := self.default_cookies or request_overrides.get('cookies')) and (cookies != DEFAULT_COOKIES) else True
+        song_info = SongInfo(source=self.source, raw_data={'search': track_info, 'download': {}, 'lyric': {}, 'quality': MUSIC_QUALITIES[-1]})
+        song_info_flac = self._parsewiththirdpartapis(search_result=track_info, request_overrides=request_overrides)
+        with suppress(Exception): song_info = self._parsewithofficialapiv1(search_result=track_info, song_info_flac=song_info_flac, lossless_quality_is_sufficient=lossless_quality_is_sufficient, request_overrides=request_overrides)
+        return song_info if song_info.with_valid_download_url else song_info_flac
+    '''parsealbum: 解析整张专辑曲目直链，复用 search 同款官方/三方解析，返回 list[SongInfo]（网易云）'''
+    @useparseheaderscookies
+    def parsealbum(self, album_id: str, request_overrides: dict = None) -> list:
+        # init + get tracks in album
+        request_overrides = dict(request_overrides or {})
+        tracks_in_album, album_name = self.getalbumtracks(album_id=album_id, request_overrides=request_overrides)
+        # parse track by track in album (并行解析每首直链，大幅加速)
+        song_infos = self._resolveplaylisttracks(tracks_in_album, lambda t: self.resolvealbumtrack(t, request_overrides), num_threadings=8, desc=f"Album {album_id}")
+        # post processing
+        song_infos, work_dir = self._removeduplicates(song_infos=song_infos), self._constructuniqueworkdir(keyword=album_name)
         for song_info in song_infos:
             song_info.work_dir, episodes = work_dir, song_info.episodes if isinstance(song_info.episodes, list) else []
             for eps_info in episodes: eps_info.work_dir = sanitize_filepath(os.path.join(work_dir, f"{song_info.song_name} - {song_info.singers}")); IOUtils.touchdir(eps_info.work_dir)

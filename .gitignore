@@ -102,3 +102,18 @@ venv.bak/
 
 # mypy
 .mypy_cache/
+
+# web frontend
+web/frontend/node_modules/
+web/static/
+web/musicdl_outputs/
+
+# 下载产物（运行时数据，勿入库）
+/musicdl_outputs/
+
+# macOS
+.DS_Store
+**/.DS_Store
+
+# TS build cache
+*.tsbuildinfo

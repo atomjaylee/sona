@@ -11,6 +11,7 @@ import re
 import copy
 import random
 import pickle
+import inspect
 import requests
 from pathlib import Path
 from threading import Lock
@@ -120,17 +121,35 @@ class BaseMusicClient():
             if song_info.identifier in identifiers: continue
             identifiers.add(song_info.identifier); unique_song_infos.append(song_info)
         return unique_song_infos
+    '''_resolveplaylisttracks: 并行解析歌单内每首曲目的下载直链，保持原顺序，返回有效 SongInfo 列表'''
+    def _resolveplaylisttracks(self, tracks: list, resolve_one, num_threadings: int = 8, desc: str = '') -> list[SongInfo]:
+        if not tracks: return []
+        results: list = [None] * len(tracks)
+        with Progress(TextColumn("{task.description}"), BarColumn(bar_width=None), MofNCompleteColumn(), TimeRemainingColumn(), refresh_per_second=10) as progress:
+            progress_id = progress.add_task(f"{desc or self.source} Playlist >>> Completed (0/{len(tracks)}) SongInfo", total=len(tracks))
+            with ThreadPoolExecutor(max_workers=max(1, min(num_threadings, len(tracks)))) as pool:
+                future_to_idx = {pool.submit(resolve_one, track): idx for idx, track in enumerate(tracks)}
+                completed = 0
+                for future in as_completed(future_to_idx):
+                    idx = future_to_idx[future]
+                    try: results[idx] = future.result()
+                    except Exception: results[idx] = None
+                    completed += 1
+                    progress.advance(progress_id, 1); progress.update(progress_id, description=f"{desc or self.source} Playlist >>> Completed ({completed}/{len(tracks)}) SongInfo")
+        return [si for si in results if isinstance(si, SongInfo) and si.with_valid_download_url]
     '''_search'''
     @usesearchheaderscookies
     def _search(self, keyword: str = '', search_url: str = '', request_overrides: dict = None, song_infos: list = [], progress: Progress = None, progress_id: int = 0):
         raise NotImplementedError('not be implemented')
     '''search'''
     @usesearchheaderscookies
-    def search(self, keyword: str, num_threadings: int = 5, request_overrides: dict = None, rule: dict = None, main_process_context: Progress = None, main_progress_id: int = None, main_progress_lock: Lock = None) -> list[SongInfo]:
+    def search(self, keyword: str, num_threadings: int = 5, request_overrides: dict = None, rule: dict = None, main_process_context: Progress = None, main_progress_id: int = None, main_progress_lock: Lock = None, page: int = 1) -> list[SongInfo]:
         # logging
         self.logger_handle.info(f'Start to search music files using {self.source}.', disable_print=self.disable_print)
-        # construct search urls
-        search_urls = self._constructsearchurls(keyword=keyword, rule=dict(rule or {}), request_overrides=(request_overrides := dict(request_overrides or {})))
+        # construct search urls (page 仅传给支持分页的源，其余源签名不变、行为不受影响)
+        construct_kwargs = dict(keyword=keyword, rule=dict(rule or {}), request_overrides=(request_overrides := dict(request_overrides or {})))
+        if 'page' in inspect.signature(self._constructsearchurls).parameters: construct_kwargs['page'] = page
+        search_urls = self._constructsearchurls(**construct_kwargs)
         # multi threadings for searching music files
         owns_progress = True if main_process_context is None else False
         if owns_progress: main_process_context = Progress(TextColumn("{task.description}"), BarColumn(bar_width=None), MofNCompleteColumn(), TimeRemainingColumn(), refresh_per_second=10); main_process_context.__enter__()

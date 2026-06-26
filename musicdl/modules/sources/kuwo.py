@@ -43,15 +43,15 @@ class KuwoMusicClient(BaseMusicClient):
         self.default_headers = self.default_search_headers
         self._initsession()
     '''_constructsearchurls'''
-    def _constructsearchurls(self, keyword: str, rule: dict = None, request_overrides: dict = None):
+    def _constructsearchurls(self, keyword: str, rule: dict = None, request_overrides: dict = None, page: int = 1):
         # init
         rule, request_overrides = rule or {}, request_overrides or {}
         (default_rule := {"vipver": "1", "client": "kt", "ft": "music", "cluster": "0", "strategy": "2012", "encoding": "utf8", "rformat": "json", "mobi": "1", "issubtitle": "1", "show_copyright_off": "1", "pn": "0", "rn": "10", "all": keyword}).update(rule)
-        # construct search urls
-        base_url, search_urls, page_size, count = 'http://www.kuwo.cn/search/searchMusicBykeyWord?', [], self.search_size_per_page, 0
+        # construct search urls (page>1 时按整页偏移取后续结果；酷我 pn 为 0 起始页号)
+        base_url, search_urls, page_size, count, offset = 'http://www.kuwo.cn/search/searchMusicBykeyWord?', [], self.search_size_per_page, 0, (max(page, 1) - 1) * self.search_size_per_source
         while self.search_size_per_source > count:
             (page_rule := copy.deepcopy(default_rule))['rn'] = page_size
-            page_rule['pn'] = str(int(count // page_size))
+            page_rule['pn'] = str(int((offset + count) // page_size))
             search_urls.append(base_url + urlencode(page_rule))
             count += page_size
         # return
@@ -353,18 +353,14 @@ class KuwoMusicClient(BaseMusicClient):
             if not playlist_result_first: playlist_result_first = copy.deepcopy(playlist_result)
             if (float(safeextractfromdict(playlist_result, ['data', 'total'], 0)) <= len(tracks_in_playlist)): break
         tracks_in_playlist = list({d["musicrid"]: d for d in tracks_in_playlist}.values())
-        # parse track by track in playlist
-        with Progress(TextColumn("{task.description}"), BarColumn(bar_width=None), MofNCompleteColumn(), TimeRemainingColumn(), refresh_per_second=10) as main_process_context:
-            main_progress_id = main_process_context.add_task(f"{len(tracks_in_playlist)} Songs Found in Playlist {playlist_id} >>> Completed (0/{len(tracks_in_playlist)}) SongInfo", total=len(tracks_in_playlist))
-            for idx, track_info in enumerate(tracks_in_playlist):
-                if idx > 0: main_process_context.advance(main_progress_id, 1); main_process_context.update(main_progress_id, description=f"{len(tracks_in_playlist)} Songs Found in Playlist {playlist_id} >>> Completed ({idx}/{len(tracks_in_playlist)}) SongInfo")
-                song_info = SongInfo(source=self.source, raw_data={'search': track_info, 'download': {}, 'lyric': {}})
-                song_info_flac = self._parsewiththirdpartapis(search_result=track_info, request_overrides=request_overrides)
-                lossless_quality_is_sufficient = False if self.default_cookies or request_overrides.get('cookies') else True
-                with suppress(Exception): song_info = self._parsewithofficialapiv1(search_result=track_info, song_info_flac=song_info_flac, lossless_quality_is_sufficient=lossless_quality_is_sufficient, request_overrides=request_overrides)
-                if (song_info := song_info if song_info.with_valid_download_url else song_info_flac).with_valid_download_url: song_infos.append(song_info); continue
-                self.logger_handle.warning(f'Fail to parse song id {song_info.identifier} >>> {song_info.album} {song_info.song_name} {song_info.singers} {song_info.download_url}', disable_print=self.disable_print)
-            main_process_context.advance(main_progress_id, 1); main_process_context.update(main_progress_id, description=f"{len(tracks_in_playlist)} Songs Found in Playlist {playlist_id} >>> Completed ({idx+1}/{len(tracks_in_playlist)}) SongInfo")
+        # parse track by track in playlist (并行解析每首直链，大幅加速)
+        def _resolve_track(track_info):
+            song_info = SongInfo(source=self.source, raw_data={'search': track_info, 'download': {}, 'lyric': {}})
+            song_info_flac = self._parsewiththirdpartapis(search_result=track_info, request_overrides=request_overrides)
+            lossless_quality_is_sufficient = False if self.default_cookies or request_overrides.get('cookies') else True
+            with suppress(Exception): song_info = self._parsewithofficialapiv1(search_result=track_info, song_info_flac=song_info_flac, lossless_quality_is_sufficient=lossless_quality_is_sufficient, request_overrides=request_overrides)
+            return song_info if song_info.with_valid_download_url else song_info_flac
+        song_infos = self._resolveplaylisttracks(tracks_in_playlist, _resolve_track, num_threadings=8, desc=f"Playlist {playlist_id}")
         # post processing
         playlist_name = legalizestring(safeextractfromdict(playlist_result_first, ['data', 'name'], None) or f"playlist-{playlist_id}")
         song_infos, work_dir = self._removeduplicates(song_infos=song_infos), self._constructuniqueworkdir(keyword=playlist_name)

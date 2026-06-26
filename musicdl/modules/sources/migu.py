@@ -42,15 +42,15 @@ class MiguMusicClient(BaseMusicClient):
         self.default_headers = self.default_search_headers
         self._initsession()
     '''_constructsearchurls'''
-    def _constructsearchurls(self, keyword: str, rule: dict = None, request_overrides: dict = None):
+    def _constructsearchurls(self, keyword: str, rule: dict = None, request_overrides: dict = None, page: int = 1):
         # init
         rule, request_overrides = rule or {}, request_overrides or {}
         (default_rule := {"text": keyword, 'pageNo': 1, 'pageSize': 20, 'isCopyright': 1, 'sort': 1, 'searchSwitch': {"song": 1, "album": 0, "singer": 0, "tagSong": 1, "mvSong": 0, "bestShow": 1}}).update(rule)
-        # construct search urls
-        search_urls, page_size, count, base_url = [], self.search_size_per_page, 0, 'https://c.musicapp.migu.cn/v1.0/content/search_all.do?'
+        # construct search urls (page>1 时按整页偏移取后续结果)
+        search_urls, page_size, count, base_url, offset = [], self.search_size_per_page, 0, 'https://c.musicapp.migu.cn/v1.0/content/search_all.do?', (max(page, 1) - 1) * self.search_size_per_source
         while self.search_size_per_source > count:
             (page_rule := copy.deepcopy(default_rule))['pageSize'] = page_size
-            page_rule['pageNo'] = int(count // page_size) + 1
+            page_rule['pageNo'] = int((offset + count) // page_size) + 1
             search_urls.append(base_url + urlencode(page_rule))
             count += page_size
         # return
@@ -142,16 +142,12 @@ class MiguMusicClient(BaseMusicClient):
             if (float(safeextractfromdict(playlist_result, ['data', 'totalCount'], 0)) <= len(tracks_in_playlist)): break
         tracks_in_playlist = list({d["contentId"]: d for d in tracks_in_playlist}.values())
         with suppress(Exception): (resp := self.get(f'https://app.c.nf.migu.cn/resource/playlist/v2.0?playlistId={playlist_id}', **request_overrides)).raise_for_status(); playlist_result_first['meta_info'] = resp2json(resp=resp)
-        # parse track by track in playlist
-        with Progress(TextColumn("{task.description}"), BarColumn(bar_width=None), MofNCompleteColumn(), TimeRemainingColumn(), refresh_per_second=10) as main_process_context:
-            main_progress_id = main_process_context.add_task(f"{len(tracks_in_playlist)} Songs Found in Playlist {playlist_id} >>> Completed (0/{len(tracks_in_playlist)}) SongInfo", total=len(tracks_in_playlist))
-            for idx, track_info in enumerate(tracks_in_playlist):
-                if idx > 0: main_process_context.advance(main_progress_id, 1); main_process_context.update(main_progress_id, description=f"{len(tracks_in_playlist)} Songs Found in Playlist {playlist_id} >>> Completed ({idx}/{len(tracks_in_playlist)}) SongInfo")
-                song_info = SongInfo(source=self.source, raw_data={'search': track_info, 'download': {}, 'lyric': {}})
-                with suppress(Exception): song_info = self._parsewithofficialapiv1(search_result=track_info, song_info_flac=None, lossless_quality_is_sufficient=False, request_overrides=request_overrides)
-                if song_info.with_valid_download_url: song_infos.append(song_info); continue
-                self.logger_handle.warning(f'Fail to parse song id {song_info.identifier} >>> {song_info.album} {song_info.song_name} {song_info.singers} {song_info.download_url}', disable_print=self.disable_print)
-            main_process_context.advance(main_progress_id, 1); main_process_context.update(main_progress_id, description=f"{len(tracks_in_playlist)} Songs Found in Playlist {playlist_id} >>> Completed ({idx+1}/{len(tracks_in_playlist)}) SongInfo")
+        # parse track by track in playlist (并行解析每首直链，大幅加速)
+        def _resolve_track(track_info):
+            song_info = SongInfo(source=self.source, raw_data={'search': track_info, 'download': {}, 'lyric': {}})
+            with suppress(Exception): song_info = self._parsewithofficialapiv1(search_result=track_info, song_info_flac=None, lossless_quality_is_sufficient=False, request_overrides=request_overrides)
+            return song_info
+        song_infos = self._resolveplaylisttracks(tracks_in_playlist, _resolve_track, num_threadings=8, desc=f"Playlist {playlist_id}")
         # post processing
         playlist_name = legalizestring(safeextractfromdict(playlist_result_first, ['meta_info', 'data', 'title'], None) or f"playlist-{playlist_id}")
         song_infos, work_dir = self._removeduplicates(song_infos=song_infos), self._constructuniqueworkdir(keyword=playlist_name)

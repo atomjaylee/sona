@@ -1,0 +1,13 @@
+services:
+  musicdl-web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: musicdl-web:latest
+    container_name: musicdl-web
+    ports:
+      - "8000:8000"
+    volumes:
+      # 持久化下载的音乐文件到宿主机
+      - ./musicdl_outputs:/app/web/musicdl_outputs
+    restart: unless-stopped
