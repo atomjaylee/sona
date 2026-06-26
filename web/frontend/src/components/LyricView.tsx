@@ -46,6 +46,48 @@ export function LyricView() {
   const raf = useRef(0)
   const [offset, setOffset] = useState(0)
 
+  // 面板拖拽：默认用 CSS 的 right/bottom 定位；一旦用户拖动，切到 left/top 自由摆放
+  const panelRef = useRef<HTMLDivElement>(null)
+  const [pos, setPos] = useState<{ x: number; y: number } | null>(null)
+  const drag = useRef<{ dx: number; dy: number } | null>(null)
+
+  const clampToViewport = (x: number, y: number) => {
+    const el = panelRef.current
+    const w = el?.offsetWidth ?? 360
+    const h = el?.offsetHeight ?? 320
+    const maxX = Math.max(0, window.innerWidth - w)
+    const maxY = Math.max(0, window.innerHeight - h)
+    return { x: Math.min(Math.max(0, x), maxX), y: Math.min(Math.max(0, y), maxY) }
+  }
+
+  const onHeaderPointerDown = (e: React.PointerEvent) => {
+    // 点在关闭按钮上时不启动拖拽，避免误触
+    if ((e.target as HTMLElement).closest('.lyric-close')) return
+    const el = panelRef.current
+    if (!el) return
+    const rect = el.getBoundingClientRect()
+    drag.current = { dx: e.clientX - rect.left, dy: e.clientY - rect.top }
+    setPos({ x: rect.left, y: rect.top }) // 锁定当前位置，脱离 right/bottom
+    try { e.currentTarget.setPointerCapture(e.pointerId) } catch { /* 指针捕获不可用时忽略 */ }
+  }
+
+  const onHeaderPointerMove = (e: React.PointerEvent) => {
+    if (!drag.current) return
+    setPos(clampToViewport(e.clientX - drag.current.dx, e.clientY - drag.current.dy))
+  }
+
+  const onHeaderPointerUp = (e: React.PointerEvent) => {
+    drag.current = null
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId)
+  }
+
+  // 窗口缩放时把面板拉回可视区，避免被挤出屏幕外
+  useEffect(() => {
+    const onResize = () => setPos((p) => (p ? clampToViewport(p.x, p.y) : p))
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
+
   const song = queue[current]
   // 拉取当前歌曲歌词（网易源会返回逐字增强型 LRC），切歌时（含上一首/下一首）自动重新获取
   const [lyric, setLyric] = useState('')
@@ -100,10 +142,20 @@ export function LyricView() {
   if (!showLyric || lines.length === 0) return null
 
   return (
-    <div className="lyric-panel">
+    <div
+      className="lyric-panel"
+      ref={panelRef}
+      style={pos ? { left: pos.x, top: pos.y, right: 'auto', bottom: 'auto' } : undefined}
+    >
       <FlowField palette={palette} brightness={0.85} className="lyric-bg" />
       <div className="lyric-scrim" />
-      <div className="lh">
+      <div
+        className="lh lyric-drag"
+        onPointerDown={onHeaderPointerDown}
+        onPointerMove={onHeaderPointerMove}
+        onPointerUp={onHeaderPointerUp}
+        onPointerCancel={onHeaderPointerUp}
+      >
         <span>歌词</span>
         <button className="lyric-close" onClick={() => setShowLyric(false)} aria-label="关闭">
           <X size={16} />

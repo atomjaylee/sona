@@ -7,7 +7,10 @@ services:
     container_name: musicdl-web
     ports:
       - "8000:8000"
+    environment:
+      # 用户数据（歌单 playlists.json）落盘目录，与下方卷映射保持一致
+      MUSICDL_DATA_DIR: /app/data
     volumes:
-      # 持久化下载的音乐文件到宿主机
-      - ./musicdl_outputs:/app/web/musicdl_outputs
+      # 数据持久化：把容器内 /app/data 映射到宿主机 ./data，歌单等数据重建容器不丢
+      - ./data:/app/data
     restart: unless-stopped

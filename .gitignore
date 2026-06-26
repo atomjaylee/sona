@@ -111,6 +111,9 @@ web/musicdl_outputs/
 # 下载产物（运行时数据，勿入库）
 /musicdl_outputs/
 
+# Docker 数据持久化目录（歌单等用户数据，勿入库）
+/data/
+
 # macOS
 .DS_Store
 **/.DS_Store

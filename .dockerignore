@@ -5,6 +5,7 @@ examples
 scripts
 mcp
 musicdl_outputs
+data
 **/__pycache__
 **/*.pyc
 **/.pytest_cache

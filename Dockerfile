@@ -33,10 +33,16 @@ COPY web/__init__.py ./web/
 # 拷贝前端构建产物
 COPY --from=frontend-builder /build/static ./web/static
 
+# 数据持久化目录：歌单等用户数据写到这里（playlists.json）。
+# 后端读取 MUSICDL_DATA_DIR；声明为 VOLUME，运行时映射到宿主机本地路径即可持久化、容器重建不丢。
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     HOST=0.0.0.0 \
-    PORT=8000
+    PORT=8000 \
+    MUSICDL_DATA_DIR=/app/data
+
+RUN mkdir -p /app/data
+VOLUME ["/app/data"]
 
 EXPOSE 8000
 

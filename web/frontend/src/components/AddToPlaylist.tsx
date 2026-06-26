@@ -12,6 +12,7 @@ export function AddToPlaylist({ song }: { song: SongInfo }) {
   const [creating, setCreating] = useState(false)
   const [newName, setNewName] = useState('')
   const [addedTo, setAddedTo] = useState<string | null>(null)
+  const [err, setErr] = useState('')
   const btnRef = useRef<HTMLButtonElement | null>(null)
   const menuRef = useRef<HTMLDivElement | null>(null)
 
@@ -47,19 +48,27 @@ export function AddToPlaylist({ song }: { song: SongInfo }) {
   }
 
   const handleAdd = async (id: string) => {
-    await addSong(id, song)
-    flash(id)
-    setOpen(false)
+    try {
+      await addSong(id, song)
+      flash(id)
+      setOpen(false)
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
+    }
   }
 
   const handleCreate = async () => {
     const name = newName.trim()
     if (!name) return
-    const p = await create(name)
-    await addSong(p.id, song)
-    setNewName('')
-    setCreating(false)
-    setOpen(false)
+    try {
+      const p = await create(name)
+      await addSong(p.id, song)
+      setNewName('')
+      setCreating(false)
+      setOpen(false)
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e))
+    }
   }
 
   return (
@@ -86,6 +95,7 @@ export function AddToPlaylist({ song }: { song: SongInfo }) {
               onClick={(e) => e.stopPropagation()}
             >
               <div className="pl-menu-head">加入歌单</div>
+              {err ? <div className="pl-menu-err">操作失败：{err}</div> : null}
               <div className="pl-menu-list">
                 {playlists.length === 0 ? (
                   <div className="pl-menu-empty">还没有歌单，新建一个吧</div>

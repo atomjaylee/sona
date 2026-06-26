@@ -55,6 +55,30 @@ cd web/frontend && npm run dev
 # 访问 http://localhost:5173
 ```
 
+### 4. Docker 部署（数据持久化）
+
+歌单等用户数据保存在容器内 `/app/data/playlists.json`（由 `MUSICDL_DATA_DIR` 指定）。
+该目录已声明为 `VOLUME`，**运行时务必映射到宿主机本地路径**，否则重建容器会丢数据。
+
+**docker compose（推荐）**：已在 `docker-compose.yml` 里把 `./data` 映射到 `/app/data`，开箱即持久化。
+
+```bash
+docker compose up -d --build
+# 歌单数据会出现在宿主机 ./data/playlists.json
+```
+
+**docker run（手动映射本地路径）**：
+
+```bash
+docker build -t musicdl-web:latest .
+docker run -d --name musicdl-web -p 8000:8000 \
+  -v "$(pwd)/data:/app/data" \
+  musicdl-web:latest
+```
+
+> 想换持久化位置：改卷映射的宿主机侧路径即可（如 `-v /your/path:/app/data`），
+> 容器内路径 `/app/data` 保持不变；也可用 `-e MUSICDL_DATA_DIR=/other` 同时改容器内目录（需同步卷映射）。
+
 ## 功能
 
 | 功能 | 说明 |

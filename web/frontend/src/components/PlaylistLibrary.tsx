@@ -29,14 +29,21 @@ function LibraryGrid({ onOpen }: { onOpen: (id: string) => void }) {
   const { playlists, loading, create } = usePlaylists()
   const [creating, setCreating] = useState(false)
   const [name, setName] = useState('')
+  const [err, setErr] = useState('')
 
   const submit = async () => {
     const n = name.trim()
     if (!n) return
-    const p = await create(n)
-    setName('')
-    setCreating(false)
-    onOpen(p.id)
+    try {
+      const p = await create(n)
+      setName('')
+      setCreating(false)
+      setErr('')
+      onOpen(p.id)
+    } catch (e) {
+      // 失败时给出原因（最常见是后端未重启、没有 /api/playlists 路由 → 404）
+      setErr(`创建失败：${e instanceof Error ? e.message : String(e)}。请确认后端已重启并包含歌单接口。`)
+    }
   }
 
   return (
@@ -67,6 +74,8 @@ function LibraryGrid({ onOpen }: { onOpen: (id: string) => void }) {
           </button>
         )}
       </section>
+
+      {err ? <div className="pl-error">{err}</div> : null}
 
       {loading ? (
         <div className="empty">加载中…</div>
