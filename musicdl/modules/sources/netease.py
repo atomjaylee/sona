@@ -678,27 +678,28 @@ class NeteaseMusicClient(BaseMusicClient):
             self.logger_handle.error(f"{self.source}._search >>> {search_url} (Error: {err})", disable_print=self.disable_print)
         # return
         return song_infos
-    '''parseplaylist'''
+    '''getplaylisttracks: 取歌单原始曲目列表 + 歌单名（不解析直链，供流式逐首解析复用，网易云）'''
     @useparseheaderscookies
-    def parseplaylist(self, playlist_url: str, request_overrides: dict = None):
+    def getplaylisttracks(self, playlist_url: str, request_overrides: dict = None) -> tuple:
         # init
         playlist_url, playlist_id = self.session.head(playlist_url, allow_redirects=True, **(request_overrides := dict(request_overrides or {}))).url, None
-        with suppress(Exception): playlist_id, song_infos = parse_qs(urlparse(urlparse(playlist_url).fragment).query, keep_blank_values=True).get('id')[0], []
-        if not playlist_id: playlist_id, song_infos = urlparse(playlist_url).path.strip('/').split('/')[-1].removesuffix('.html').removesuffix('.htm'), []
-        if (not (hostname := obtainhostname(url=playlist_url))) or (not hostmatchessuffix(hostname, NETEASE_MUSIC_HOSTS)): return song_infos
+        with suppress(Exception): playlist_id = parse_qs(urlparse(urlparse(playlist_url).fragment).query, keep_blank_values=True).get('id')[0]
+        if not playlist_id: playlist_id = urlparse(playlist_url).path.strip('/').split('/')[-1].removesuffix('.html').removesuffix('.htm')
+        if (not (hostname := obtainhostname(url=playlist_url))) or (not hostmatchessuffix(hostname, NETEASE_MUSIC_HOSTS)): return [], ''
         # get tracks in playlist
         (resp := self.post('https://music.163.com/api/v6/playlist/detail', data={'id': playlist_id}, **request_overrides)).raise_for_status()
         tracks_in_playlist = (safeextractfromdict((playlist_result := resp2json(resp=resp)), ['playlist', 'trackIds'], []) or [])
-        # parse track by track in playlist (并行解析每首直链，大幅加速)
-        def _resolve_track(track_info):
-            song_info = SongInfo(source=self.source, raw_data={'search': track_info, 'download': {}, 'lyric': {}, 'quality': MUSIC_QUALITIES[-1]})
-            song_info_flac = self._parsewiththirdpartapis(search_result=track_info, request_overrides=request_overrides)
-            lossless_quality_is_sufficient = False if (cookies := self.default_cookies or request_overrides.get('cookies')) and (cookies != DEFAULT_COOKIES) else True
-            with suppress(Exception): song_info = self._parsewithofficialapiv1(search_result=track_info, song_info_flac=song_info_flac, lossless_quality_is_sufficient=lossless_quality_is_sufficient, request_overrides=request_overrides)
-            return song_info if song_info.with_valid_download_url else song_info_flac
-        song_infos = self._resolveplaylisttracks(tracks_in_playlist, _resolve_track, num_threadings=8, desc=f"Playlist {playlist_id}")
-        # post processing
         playlist_name = legalizestring(safeextractfromdict(playlist_result, ['playlist', 'name'], None) or f"playlist-{playlist_id}")
+        return tracks_in_playlist, playlist_name
+    '''parseplaylist'''
+    @useparseheaderscookies
+    def parseplaylist(self, playlist_url: str, request_overrides: dict = None):
+        # init + get tracks in playlist
+        request_overrides = dict(request_overrides or {})
+        tracks_in_playlist, playlist_name = self.getplaylisttracks(playlist_url=playlist_url, request_overrides=request_overrides)
+        # parse track by track in playlist (并行解析每首直链，大幅加速；与 resolvealbumtrack 同款解析逻辑)
+        song_infos = self._resolveplaylisttracks(tracks_in_playlist, lambda t: self.resolvealbumtrack(t, request_overrides), num_threadings=8, desc=f"Playlist {playlist_name}")
+        # post processing
         song_infos, work_dir = self._removeduplicates(song_infos=song_infos), self._constructuniqueworkdir(keyword=playlist_name)
         for song_info in song_infos:
             song_info.work_dir, episodes = work_dir, song_info.episodes if isinstance(song_info.episodes, list) else []

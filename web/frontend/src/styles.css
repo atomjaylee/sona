@@ -1451,12 +1451,29 @@ tr:hover .col-idx:has(.idx-play:not(:disabled)) .idx-play {
 
 /* 封面拼图 */
 .pl-cover {
+  position: relative;
   width: 100%;
   aspect-ratio: 1 / 1;
   border-radius: 8px;
   overflow: hidden;
   background: var(--bg-soft);
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+}
+/* 热门歌单封面右上角播放量徽标 */
+.hot-play-count {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(2px);
 }
 .pl-cover-empty {
   display: flex;

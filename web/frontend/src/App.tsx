@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Search, Link2, ListMusic, Heart, type LucideIcon } from 'lucide-react'
+import { Search, Link2, ListMusic, Heart, Flame, type LucideIcon } from 'lucide-react'
 import { PlayerProvider } from './player-provider'
 import { PlaylistsProvider } from './playlists-provider'
 import { usePlayer } from './player-context'
@@ -9,12 +9,14 @@ import { SearchView } from './components/SearchView'
 import { PlaylistPanel } from './components/PlaylistPanel'
 import { PlaylistParser } from './components/PlaylistParser'
 import { PlaylistLibrary } from './components/PlaylistLibrary'
+import { HotPlaylists } from './components/HotPlaylists'
 import { useNowPlayingTab } from './use-now-playing-tab'
 
-type Tab = 'search' | 'library' | 'playlist' | 'queue'
+type Tab = 'search' | 'hot' | 'library' | 'playlist' | 'queue'
 
 const NAV: { key: Tab; Icon: LucideIcon; label: string }[] = [
   { key: 'search', Icon: Search, label: '搜索' },
+  { key: 'hot', Icon: Flame, label: '热门歌单' },
   { key: 'library', Icon: Heart, label: '我的歌单' },
   { key: 'playlist', Icon: Link2, label: '歌单解析' },
   { key: 'queue', Icon: ListMusic, label: '播放队列' },
@@ -47,6 +49,9 @@ function Shell() {
         {/* 用 hidden 而非卸载，保留各 tab 内部 state（搜索结果、歌单结果等） */}
         <div className="tab-pane" hidden={tab !== 'search'}>
           <SearchView />
+        </div>
+        <div hidden={tab !== 'hot'}>
+          <HotPlaylists />
         </div>
         <div hidden={tab !== 'library'}>
           <PlaylistLibrary />

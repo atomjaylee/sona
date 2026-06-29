@@ -66,6 +66,24 @@ class SourceInfo(BaseModel):
     enabled: bool
 
 
+# ---------- 热门歌单（QQ / 网易云 推荐歌单广场） ----------
+class HotPlaylistOut(BaseModel):
+    id: str = Field(..., description="歌单 id（网易 playlist id / QQ dissid）")
+    name: str
+    cover_url: str = ""
+    play_count: int = 0
+    song_count: int = 0
+    creator: str = ""
+    url: str = Field(..., description="可被歌单解析接口识别的歌单链接")
+    source: str
+
+
+class HotPlaylistResponse(BaseModel):
+    source: str
+    total: int
+    playlists: list[HotPlaylistOut]
+
+
 # ---------- 歌单（收藏） ----------
 class PlaylistSummary(BaseModel):
     id: str

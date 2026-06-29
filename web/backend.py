@@ -149,6 +149,56 @@ def playlist(req: models.PlaylistRequest) -> models.PlaylistResponse:
     return models.PlaylistResponse(total=len(songs), songs=[models.SongInfoOut(**s) for s in songs])
 
 
+@app.get("/api/playlist/stream")
+async def playlist_stream(url: str = Query(..., min_length=1), source: str | None = Query(None)):
+    """流式解析外部/热门歌单：先下发曲目总数，再逐首解析直链、谁先解完谁先推送。
+
+    与专辑流式解析同构（共用线程池/超时），避免百首歌单整批阻塞导致前端「一直解析」。
+    """
+    import asyncio
+    import json
+
+    src, tracks, _name = await asyncio.to_thread(session.playlist_tracks_meta, url, source)
+    total = len(tracks)
+    sem = asyncio.Semaphore(8)
+
+    async def resolve_one(index: int, track: dict):
+        async with sem:
+            loop = asyncio.get_running_loop()
+            try:
+                song = await asyncio.wait_for(
+                    loop.run_in_executor(_album_pool, session.resolve_album_track, src, track),
+                    timeout=ALBUM_TRACK_TIMEOUT,
+                )
+            except (asyncio.TimeoutError, Exception):
+                song = None
+            return index, song
+
+    async def event_gen():
+        yield {"event": "meta", "data": json.dumps({"total": total}, ensure_ascii=False)}
+        tasks = [asyncio.create_task(resolve_one(i, t)) for i, t in enumerate(tracks)]
+        done = 0
+        for coro in asyncio.as_completed(tasks):
+            index, song = await coro
+            done += 1
+            payload = {"done": done, "total": total, "index": index, "song": song}
+            yield {"event": "track", "data": json.dumps(payload, ensure_ascii=False)}
+        yield {"event": "done", "data": json.dumps({"total": total}, ensure_ascii=False)}
+
+    return EventSourceResponse(event_gen())
+
+
+# ---------- hot playlists (热门/推荐歌单广场) ----------
+@app.get("/api/hotplaylists", response_model=models.HotPlaylistResponse)
+def hot_playlists(source: str = Query("NeteaseMusicClient", min_length=1)) -> models.HotPlaylistResponse:
+    playlists = session.hot_playlists(source)
+    return models.HotPlaylistResponse(
+        source=source,
+        total=len(playlists),
+        playlists=[models.HotPlaylistOut(**p) for p in playlists],
+    )
+
+
 # ---------- playlists (个人收藏歌单, 持久化) ----------
 @app.get("/api/playlists", response_model=models.PlaylistListResponse)
 def list_playlists() -> models.PlaylistListResponse:

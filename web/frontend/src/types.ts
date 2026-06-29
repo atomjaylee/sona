@@ -60,3 +60,20 @@ export interface PlaylistSummary {
 export interface PlaylistDetail extends PlaylistSummary {
   songs: SongInfo[]
 }
+
+export interface HotPlaylist {
+  id: string
+  name: string
+  cover_url: string
+  play_count: number
+  song_count: number
+  creator: string
+  url: string
+  source: string
+}
+
+export interface HotPlaylistResponse {
+  source: string
+  total: number
+  playlists: HotPlaylist[]
+}

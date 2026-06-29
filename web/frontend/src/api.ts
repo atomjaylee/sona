@@ -1,5 +1,6 @@
 import type {
   AlbumSearchResponse,
+  HotPlaylistResponse,
   PlaylistDetail,
   PlaylistResponse,
   PlaylistSummary,
@@ -76,6 +77,34 @@ export function subscribeAlbum(
 ): () => void {
   const qs = `album_id=${encodeURIComponent(albumId)}${source ? `&source=${encodeURIComponent(source)}` : ''}`
   const es = new EventSource(`${base}api/album/stream?${qs}`)
+  es.addEventListener('meta', (e) => onMeta(JSON.parse((e as MessageEvent).data).total))
+  es.addEventListener('track', (e) => onTrack(JSON.parse((e as MessageEvent).data)))
+  es.addEventListener('done', () => {
+    onDone()
+    es.close()
+  })
+  es.onerror = () => {
+    onDone()
+    es.close()
+  }
+  return () => es.close()
+}
+
+/** 拉取热门/推荐歌单卡片（网易云精品歌单 / QQ 歌单广场最热）。 */
+export async function getHotPlaylists(source: string): Promise<HotPlaylistResponse> {
+  return json(await fetch(`${base}api/hotplaylists?source=${encodeURIComponent(source)}`))
+}
+
+/** 流式解析歌单（外部链接 / 热门歌单）：解一首推一首，返回 close 句柄用于中途取消。 */
+export function subscribePlaylist(
+  url: string,
+  source: string | null | undefined,
+  onMeta: (total: number) => void,
+  onTrack: (batch: AlbumTrackBatch) => void,
+  onDone: () => void,
+): () => void {
+  const qs = `url=${encodeURIComponent(url)}${source ? `&source=${encodeURIComponent(source)}` : ''}`
+  const es = new EventSource(`${base}api/playlist/stream?${qs}`)
   es.addEventListener('meta', (e) => onMeta(JSON.parse((e as MessageEvent).data).total))
   es.addEventListener('track', (e) => onTrack(JSON.parse((e as MessageEvent).data)))
   es.addEventListener('done', () => {

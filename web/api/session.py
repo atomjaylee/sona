@@ -4,6 +4,8 @@ import threading
 import time
 from typing import Any
 
+import requests
+
 from musicdl.musicdl import MusicClient
 from musicdl.modules import SongInfo
 
@@ -14,6 +16,14 @@ DEFAULT_SOURCES = ["NeteaseMusicClient", "QQMusicClient", "KuwoMusicClient"]
 
 # 专辑搜索支持的源（均实现 searchalbum/parsealbum），按此顺序聚合
 ALBUM_SOURCES = ["NeteaseMusicClient", "QQMusicClient"]
+
+# 热门歌单支持的源（网易云「精品歌单」+ QQ「歌单广场·最热」）
+HOT_PLAYLIST_SOURCES = ["NeteaseMusicClient", "QQMusicClient"]
+HOT_PLAYLIST_TTL = 1800.0          # 热门歌单缓存秒数（半小时，避免频繁打官方接口）
+HOT_PLAYLIST_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36"
+)
 
 # 检索提速核心：把每个源的检索拆成更小的分页（search_size_per_page），
 # 每个分页在独立线程里解析下载直链/校验/取歌词，从而把原本「单页内逐首串行」
@@ -70,6 +80,9 @@ class SessionManager:
         # 关键词检索结果缓存: (source, keyword) -> (timestamp, list[dict])
         self._result_cache: dict[tuple[str, str, int], tuple[float, list[dict]]] = {}
         self._result_cache_lock = threading.Lock()
+        # 热门歌单缓存: source -> (timestamp, list[dict])
+        self._hot_cache: dict[str, tuple[float, list[dict]]] = {}
+        self._hot_cache_lock = threading.Lock()
 
     # ---- sources ----
     def available_sources(self) -> list[str]:
@@ -206,6 +219,25 @@ class SessionManager:
             out.append(self._to_json(sid, info))
         return out
 
+    def playlist_tracks_meta(self, url: str, source: str | None = None) -> tuple[str, list, str]:
+        """取歌单原始曲目列表（未解析直链）+ 歌单名 + 实际来源，供流式逐首解析。
+
+        source 指定歌单所属源（热门歌单卡片自带）；缺省时按 HOT_PLAYLIST_SOURCES 依次尝试。
+        每首曲目随后复用 resolve_album_track（网易/QQ 的单首解析逻辑与歌单一致）解析直链。
+        """
+        candidates = [source] if source else list(HOT_PLAYLIST_SOURCES)
+        for s in candidates:
+            client = self.client.music_clients.get(s)
+            if client is None or not hasattr(client, "getplaylisttracks"):
+                continue
+            try:
+                tracks, name = client.getplaylisttracks(playlist_url=url)
+            except Exception:
+                tracks, name = [], ""
+            if tracks:
+                return s, list(tracks), name or ""
+        return (source or ""), [], ""
+
     def search_playlist(self, url: str) -> list[dict]:
         infos = self.client.parseplaylist(playlist_url=url)
         out: list[dict] = []
@@ -216,6 +248,90 @@ class SessionManager:
             with self._cache_lock:
                 self._cache[sid] = info
             out.append(self._to_json(sid, info))
+        return out
+
+    # ---- hot playlists (推荐歌单广场) ----
+    def hot_playlists(self, source: str) -> list[dict]:
+        """拉取某个源的热门/推荐歌单卡片（带半小时缓存）。
+
+        返回的每张卡片含一个 `url` 字段，可直接交给现有「歌单解析」接口解析曲目。
+        """
+        if source not in HOT_PLAYLIST_SOURCES:
+            return []
+        now = time.time()
+        with self._hot_cache_lock:
+            hit = self._hot_cache.get(source)
+            if hit is not None and now - hit[0] < HOT_PLAYLIST_TTL:
+                return hit[1]
+        try:
+            if source == "NeteaseMusicClient":
+                out = self._hot_netease()
+            elif source == "QQMusicClient":
+                out = self._hot_qq()
+            else:
+                out = []
+        except Exception:
+            out = []
+        if out:
+            with self._hot_cache_lock:
+                self._hot_cache[source] = (now, out)
+        return out
+
+    def _hot_netease(self, limit: int = 30) -> list[dict]:
+        """网易云「精品歌单」列表（无需登录的公开接口）。"""
+        resp = requests.get(
+            "https://music.163.com/api/playlist/highquality/list",
+            params={"cat": "全部", "limit": limit, "total": "true", "offset": 0},
+            headers={"User-Agent": HOT_PLAYLIST_UA, "Referer": "https://music.163.com/"},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        out: list[dict] = []
+        for p in (resp.json().get("playlists") or []):
+            if not isinstance(p, dict) or not p.get("id"):
+                continue
+            pid = str(p["id"])
+            out.append({
+                "id": pid,
+                "name": str(p.get("name") or ""),
+                "cover_url": p.get("coverImgUrl") or p.get("picUrl") or "",
+                "play_count": int(p.get("playCount") or 0),
+                "song_count": int(p.get("trackCount") or 0),
+                "creator": str(((p.get("creator") or {}).get("nickname")) or ""),
+                # 网易歌单解析依赖 fragment 形式的链接（#/playlist?id=）
+                "url": f"https://music.163.com/#/playlist?id={pid}",
+                "source": "NeteaseMusicClient",
+            })
+        return out
+
+    def _hot_qq(self, limit: int = 30) -> list[dict]:
+        """QQ 音乐「歌单广场」最热歌单（sortId=5 表示最热）。"""
+        resp = requests.get(
+            "https://c.y.qq.com/splcloud/fcgi-bin/fcg_get_diss_by_tag.fcg",
+            params={
+                "categoryId": "10000000", "sortId": "5", "sin": 0, "ein": max(limit - 1, 0),
+                "format": "json", "inCharset": "utf8", "outCharset": "utf-8",
+            },
+            headers={"User-Agent": HOT_PLAYLIST_UA, "Referer": "https://y.qq.com/"},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        out: list[dict] = []
+        for p in ((resp.json().get("data") or {}).get("list") or []):
+            if not isinstance(p, dict) or not p.get("dissid"):
+                continue
+            did = str(p["dissid"])
+            out.append({
+                "id": did,
+                "name": str(p.get("dissname") or ""),
+                "cover_url": p.get("imgurl") or "",
+                "play_count": int(p.get("listennum") or 0),
+                "song_count": int(p.get("song_count") or 0),
+                "creator": str(((p.get("creator") or {}).get("name")) or ""),
+                # QQ 歌单解析按路径末段取 dissid
+                "url": f"https://y.qq.com/n/ryqq/playlist/{did}",
+                "source": "QQMusicClient",
+            })
         return out
 
     # ---- access cached song ----
