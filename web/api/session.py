@@ -339,23 +339,32 @@ class SessionManager:
         with self._cache_lock:
             return self._cache.get(song_id)
 
-    def reresolve(self, song_id: str, name: str | None, singers: str | None) -> SongInfo | None:
-        """为「歌单里收藏的歌」重新解析一条有效直链。
+    def reresolve(self, song_id: str, name: str | None, singers: str | None, force: bool = False) -> SongInfo | None:
+        """重新解析一条有效直链。
 
         各源的下载直链是临时 CDN 链接，会过期；服务端内存缓存也会随重启丢失。
-        收藏播放时若缓存里没有有效直链，就按 source 用歌名重新检索一遍，
+        播放时若缓存里没有有效直链，就按 source 用歌名重新检索一遍，
         优先精确匹配同一 identifier，其次回退到「同名同歌手」的结果，
         命中后缓存到原 song_id 下，使后续 /stream、/download、/lyric 照常按 id 工作。
+
+        force=True 时跳过「缓存直链是 http 就直接返回」的快路径：过期的直链仍是
+        http 形态、无法靠字符串判断失效，故上游 CDN 实际返回 4xx 时用 force 强制重解。
+        缺省 name 时回退用缓存 SongInfo 自身的歌名/歌手，使搜索/专辑/热门歌单里的
+        歌（未收藏、不在 playlist_store）也能在直链过期后自愈。
         """
         cached = self.get_song(song_id)
-        if cached is not None and _is_http_url(cached.download_url):
+        if not force and cached is not None and _is_http_url(cached.download_url):
             return cached
+        if not name and cached is not None:
+            name, singers = cached.song_name, (singers or cached.singers)
         source, _sep, _identifier = song_id.partition(":")
         client = self.client.music_clients.get(source)
         if client is None or not name:
             return cached
+        # 用「歌名 + 歌手」检索，远比单歌名更可能命中同一 identifier（同名歌曲极多）
+        keyword = f"{name} {singers}".strip() if singers else name
         try:
-            infos = client.search(keyword=name, num_threadings=SOURCE_THREADINGS)
+            infos = client.search(keyword=keyword, num_threadings=SOURCE_THREADINGS)
         except Exception:
             return cached
         valid = [i for i in infos if isinstance(i, SongInfo) and i.with_valid_download_url]
@@ -365,6 +374,9 @@ class SessionManager:
                 (i for i in valid if (i.song_name or "") == name and (i.singers or "") == singers),
                 None,
             )
+        # 末路兜底：同名同源的第一条有效结果（用户本就想听这首歌名，旧 id 已不可用）
+        if match is None:
+            match = next((i for i in valid if (i.song_name or "") == name), None)
         if match is None:
             return cached
         with self._cache_lock:

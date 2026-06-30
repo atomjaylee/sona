@@ -249,15 +249,46 @@ def remove_playlist_song(playlist_id: str, song_id: str) -> models.PlaylistDetai
     return models.PlaylistDetail(**p)
 
 
-def _resolve_for_playback(song_id: str):
-    """取一首歌的可播放 SongInfo：缓存未命中或直链失效时，借歌单里存的歌名/歌手重解析。"""
+def _is_http(url) -> bool:
+    return isinstance(url, str) and url.startswith("http")
+
+
+def _resolve_for_playback(song_id: str, force: bool = False):
+    """取一首歌的可播放 SongInfo：缓存未命中或直链失效时，借歌名/歌手重解析。
+
+    force=True 用于上游 CDN 实际返回 4xx（直链过期）时强制重解——过期直链仍是
+    http 形态，无法靠字符串判断，必须以实际请求结果为准。歌名/歌手优先取缓存
+    SongInfo 自身，其次取收藏歌单存的元数据，使搜索/专辑/热门歌单里的歌也能自愈。
+    """
     info = session.get_song(song_id)
-    if info is not None and isinstance(info.download_url, str) and info.download_url.startswith("http"):
+    if not force and info is not None and _is_http(info.download_url):
         return info
-    meta = playlist_store.find_song(song_id)
-    if meta:
-        info = session.reresolve(song_id, meta.get("song_name"), meta.get("singers")) or info
-    return info
+    name = info.song_name if info else None
+    singers = info.singers if info else None
+    if not name:
+        meta = playlist_store.find_song(song_id)
+        if meta:
+            name, singers = meta.get("song_name"), meta.get("singers")
+    return session.reresolve(song_id, name, singers, force=force) or info
+
+
+def _open_upstream(song_id: str, info, extra_headers: dict | None = None):
+    """请求上游直链；若直链过期（上游返回 4xx）则强制重解一次并重试。返回 (resp, info)。"""
+    def do_get(inf):
+        headers, cookies = session.download_io(inf)
+        if extra_headers:
+            headers.update(extra_headers)
+        return requests.get(inf.download_url, headers=headers, cookies=cookies, stream=True, timeout=(10, 60))
+
+    resp = do_get(info)
+    if resp.status_code >= 400:
+        with suppress(Exception):
+            resp.close()
+        fresh = _resolve_for_playback(song_id, force=True)
+        if fresh is not None and _is_http(fresh.download_url) and fresh.download_url != info.download_url:
+            info = fresh
+            resp = do_get(info)
+    return resp, info
 
 
 # ---------- lyric ----------
@@ -341,16 +372,19 @@ def stream(song_id: str, request: Request) -> StreamingResponse:
     info = _resolve_for_playback(song_id)
     if info is None:
         raise HTTPException(404, "song not found")
-    if not (isinstance(info.download_url, str) and info.download_url.startswith("http")):
+    if not _is_http(info.download_url):
         raise HTTPException(400, "this source is not streamable in browser")
-    headers, cookies = session.download_io(info)
 
     # 透传浏览器的 Range 请求到上游 CDN，使 <audio> 可拖动/点击跳转到任意时间点
     range_header = request.headers.get("range")
-    if range_header:
-        headers["Range"] = range_header
-
-    req = requests.get(info.download_url, headers=headers, cookies=cookies, stream=True, timeout=(10, 60))
+    extra = {"Range": range_header} if range_header else None
+    # 直链过期会被上游 CDN 拒（4xx），_open_upstream 会强制重解并重试一次
+    req, info = _open_upstream(song_id, info, extra)
+    # 重解后仍失败：返回 502 而非把错误响应体当音频流回去（否则前端表现为「点了没反应」）
+    if req.status_code >= 400:
+        with suppress(Exception):
+            req.close()
+        raise HTTPException(502, "upstream link expired, retry later")
     content_type = req.headers.get("Content-Type", "audio/mpeg")
 
     # 回传可跳转所需的响应头（206 + Content-Range + Accept-Ranges + Content-Length）
@@ -418,11 +452,15 @@ def download_file(song_id: str):
     info = _resolve_for_playback(song_id)
     if info is None:
         raise HTTPException(404, "song not found")
-    if not (isinstance(info.download_url, str) and info.download_url.startswith("http")):
+    if not _is_http(info.download_url):
         raise HTTPException(400, "this source is not directly downloadable in browser")
 
-    headers, cookies = session.download_io(info)
-    upstream = requests.get(info.download_url, headers=headers, cookies=cookies, stream=True, timeout=(10, 60))
+    # 直链过期会被上游 CDN 拒（4xx），_open_upstream 会强制重解并重试一次
+    upstream, info = _open_upstream(song_id, info)
+    if upstream.status_code >= 400:
+        with suppress(Exception):
+            upstream.close()
+        raise HTTPException(502, "upstream link expired, retry later")
 
     ext = (info.ext or "mp3").lstrip(".")
     base = " - ".join([p for p in (info.song_name, info.singers) if p]) or "audio"

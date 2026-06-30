@@ -8,16 +8,37 @@ export function Player() {
   const { audioRef, queue, current, playing, togglePlay, setPlaying, next, prev, showLyric, setShowLyric } = usePlayer()
   const [cur, setCur] = useState(0)
   const [dur, setDur] = useState(0)
+  const [reloadKey, setReloadKey] = useState(0)
   const rafRef = useRef(0)
+  // 每首歌的自动重试计数：直链过期时换 src 触发后端重解，至多重试 2 次避免死循环
+  const retryRef = useRef<{ id: string; n: number }>({ id: '', n: 0 })
 
   const song = queue[current]
-  const src = song?.playable ? `/api/stream/${encodeURIComponent(song.id)}` : null
+  const src = song?.playable
+    ? `/api/stream/${encodeURIComponent(song.id)}${reloadKey ? `?_r=${reloadKey}` : ''}`
+    : null
 
   // 切歌时重置
   useEffect(() => {
     setCur(0)
     setDur(0)
+    retryRef.current = { id: song?.id ?? '', n: 0 }
   }, [song?.id])
+
+  // 直链过期 / 加载失败：换带 nonce 的 src 强制重新请求，后端会重解一条新直链
+  useEffect(() => {
+    const a = audioRef.current
+    if (!a) return
+    const onError = () => {
+      const r = retryRef.current
+      if (song && r.id === song.id && r.n < 2) {
+        r.n += 1
+        setReloadKey((k) => k + 1)
+      }
+    }
+    a.addEventListener('error', onError)
+    return () => a.removeEventListener('error', onError)
+  }, [song, audioRef])
 
   // 切到新歌时自动播放（仅依赖 src，避免与原生 play/pause 事件形成回环）
   useEffect(() => {
