@@ -125,3 +125,19 @@ web/musicdl_outputs/
 
 # TS build cache
 *.tsbuildinfo
+
+# Playwright（MCP 截图 / 测试报告 / 运行产物，调试用临时文件）
+.playwright-mcp/
+playwright-report/
+test-results/
+.last-run.json
+
+# Git worktrees（Claude Code / agent 隔离用临时工作树）
+.worktrees/
+worktrees/
+*.worktree/
+
+# 编辑器 / 工具本地配置与缓存
+.idea/
+.vscode/
+*.swp
