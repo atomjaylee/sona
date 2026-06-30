@@ -43,6 +43,8 @@ function PlaylistDetailView({ pl, onBack }: { pl: HotPlaylist; onBack: () => voi
   const [done, setDone] = useState(0)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  // 按原始 index 收集，保证曲目/播放队列保持歌单原顺序；并按 song.id 去重（歌单可能有重复曲目）
+  const byIndexRef = useRef<Map<number, SongInfo>>(new Map())
 
   useEffect(() => {
     setLoading(true)
@@ -50,6 +52,7 @@ function PlaylistDetailView({ pl, onBack }: { pl: HotPlaylist; onBack: () => voi
     setSongs([])
     setTotal(0)
     setDone(0)
+    byIndexRef.current = new Map()
     // 流式解析：解一首推一首，避免上百首歌单整批阻塞导致「一直解析」
     const close = subscribePlaylist(
       pl.url,
@@ -63,9 +66,21 @@ function PlaylistDetailView({ pl, onBack }: { pl: HotPlaylist; onBack: () => voi
       },
       (batch) => {
         setDone(batch.done)
-        if (batch.song) setSongs((prev) => [...prev, batch.song as SongInfo])
+        if (!batch.song) return
+        // 按 index 插入保持原顺序，再按 id 去重，避免重复曲目出现两行
+        byIndexRef.current.set(batch.index, batch.song)
+        const seen = new Set<string>()
+        const ordered = [...byIndexRef.current.entries()]
+          .sort((a, b) => a[0] - b[0])
+          .map(([, s]) => s)
+          .filter((s) => (seen.has(s.id) ? false : (seen.add(s.id), true)))
+        setSongs(ordered)
       },
-      () => setLoading(false),
+      (ok) => {
+        setLoading(false)
+        // 连接中断且一首都没解析出来：明确报错，避免把空列表当成「解析成功」
+        if (!ok && byIndexRef.current.size === 0) setError('解析中断，请重试')
+      },
     )
     return close
   }, [pl.url, pl.source])

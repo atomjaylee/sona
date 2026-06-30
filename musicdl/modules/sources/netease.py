@@ -699,13 +699,8 @@ class NeteaseMusicClient(BaseMusicClient):
         tracks_in_playlist, playlist_name = self.getplaylisttracks(playlist_url=playlist_url, request_overrides=request_overrides)
         # parse track by track in playlist (并行解析每首直链，大幅加速；与 resolvealbumtrack 同款解析逻辑)
         song_infos = self._resolveplaylisttracks(tracks_in_playlist, lambda t: self.resolvealbumtrack(t, request_overrides), num_threadings=8, desc=f"Playlist {playlist_name}")
-        # post processing
-        song_infos, work_dir = self._removeduplicates(song_infos=song_infos), self._constructuniqueworkdir(keyword=playlist_name)
-        for song_info in song_infos:
-            song_info.work_dir, episodes = work_dir, song_info.episodes if isinstance(song_info.episodes, list) else []
-            for eps_info in episodes: eps_info.work_dir = sanitize_filepath(os.path.join(work_dir, f"{song_info.song_name} - {song_info.singers}")); IOUtils.touchdir(eps_info.work_dir)
-        # return results
-        return song_infos
+        # post processing + return results
+        return self._finalizetracks(song_infos, playlist_name)
     '''searchalbum: 按专辑名检索，返回专辑元数据列表（网易云，type=10 表示按专辑检索）'''
     def searchalbum(self, keyword: str, limit: int = 20, request_overrides: dict = None) -> list:
         # init
@@ -752,10 +747,5 @@ class NeteaseMusicClient(BaseMusicClient):
         tracks_in_album, album_name = self.getalbumtracks(album_id=album_id, request_overrides=request_overrides)
         # parse track by track in album (并行解析每首直链，大幅加速)
         song_infos = self._resolveplaylisttracks(tracks_in_album, lambda t: self.resolvealbumtrack(t, request_overrides), num_threadings=8, desc=f"Album {album_id}")
-        # post processing
-        song_infos, work_dir = self._removeduplicates(song_infos=song_infos), self._constructuniqueworkdir(keyword=album_name)
-        for song_info in song_infos:
-            song_info.work_dir, episodes = work_dir, song_info.episodes if isinstance(song_info.episodes, list) else []
-            for eps_info in episodes: eps_info.work_dir = sanitize_filepath(os.path.join(work_dir, f"{song_info.song_name} - {song_info.singers}")); IOUtils.touchdir(eps_info.work_dir)
-        # return results
-        return song_infos
+        # post processing + return results
+        return self._finalizetracks(song_infos, album_name)

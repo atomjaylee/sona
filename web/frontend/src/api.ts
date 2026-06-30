@@ -67,27 +67,47 @@ export interface AlbumTrackBatch {
   song: SongInfo | null
 }
 
+/**
+ * 流式解析（专辑/歌单共用）：解一首推一首。返回 close 句柄用于中途取消。
+ * onDone(ok)：ok=true 表示服务端正常发完（done 事件）；ok=false 表示连接异常中断。
+ * 用 finished 去重：done 后服务端关连接会再触发一次 onerror，需忽略，避免误报错误。
+ */
+function subscribeStream(
+  path: string,
+  qs: string,
+  onMeta: (total: number) => void,
+  onTrack: (batch: AlbumTrackBatch) => void,
+  onDone: (ok: boolean) => void,
+): () => void {
+  const es = new EventSource(`${base}${path}?${qs}`)
+  let finished = false
+  const finish = (ok: boolean) => {
+    if (finished) return
+    finished = true
+    es.close()
+    onDone(ok)
+  }
+  es.addEventListener('meta', (e) => onMeta(JSON.parse((e as MessageEvent).data).total))
+  es.addEventListener('track', (e) => onTrack(JSON.parse((e as MessageEvent).data)))
+  es.addEventListener('done', () => finish(true))
+  es.onerror = () => finish(false)
+  // 手动取消（组件卸载/切换）：静默关闭，不回调 onDone，避免对已卸载组件 setState
+  return () => {
+    finished = true
+    es.close()
+  }
+}
+
 /** 流式解析专辑：解一首推一首。返回 close 句柄用于中途取消。 */
 export function subscribeAlbum(
   albumId: string,
   source: string | null | undefined,
   onMeta: (total: number) => void,
   onTrack: (batch: AlbumTrackBatch) => void,
-  onDone: () => void,
+  onDone: (ok: boolean) => void,
 ): () => void {
   const qs = `album_id=${encodeURIComponent(albumId)}${source ? `&source=${encodeURIComponent(source)}` : ''}`
-  const es = new EventSource(`${base}api/album/stream?${qs}`)
-  es.addEventListener('meta', (e) => onMeta(JSON.parse((e as MessageEvent).data).total))
-  es.addEventListener('track', (e) => onTrack(JSON.parse((e as MessageEvent).data)))
-  es.addEventListener('done', () => {
-    onDone()
-    es.close()
-  })
-  es.onerror = () => {
-    onDone()
-    es.close()
-  }
-  return () => es.close()
+  return subscribeStream('api/album/stream', qs, onMeta, onTrack, onDone)
 }
 
 /** 拉取热门/推荐歌单卡片（网易云精品歌单 / QQ 歌单广场最热）。 */
@@ -101,21 +121,10 @@ export function subscribePlaylist(
   source: string | null | undefined,
   onMeta: (total: number) => void,
   onTrack: (batch: AlbumTrackBatch) => void,
-  onDone: () => void,
+  onDone: (ok: boolean) => void,
 ): () => void {
   const qs = `url=${encodeURIComponent(url)}${source ? `&source=${encodeURIComponent(source)}` : ''}`
-  const es = new EventSource(`${base}api/playlist/stream?${qs}`)
-  es.addEventListener('meta', (e) => onMeta(JSON.parse((e as MessageEvent).data).total))
-  es.addEventListener('track', (e) => onTrack(JSON.parse((e as MessageEvent).data)))
-  es.addEventListener('done', () => {
-    onDone()
-    es.close()
-  })
-  es.onerror = () => {
-    onDone()
-    es.close()
-  }
-  return () => es.close()
+  return subscribeStream('api/playlist/stream', qs, onMeta, onTrack, onDone)
 }
 
 export async function parsePlaylist(url: string): Promise<PlaylistResponse> {

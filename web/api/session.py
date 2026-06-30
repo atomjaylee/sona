@@ -355,13 +355,34 @@ class SessionManager:
         cached = self.get_song(song_id)
         if not force and cached is not None and _is_http_url(cached.download_url):
             return cached
-        if not name and cached is not None:
-            name, singers = cached.song_name, (singers or cached.singers)
         source, _sep, _identifier = song_id.partition(":")
         client = self.client.music_clients.get(source)
-        if client is None or not name:
+        if client is None:
             return cached
-        # 用「歌名 + 歌手」检索，远比单歌名更可能命中同一 identifier（同名歌曲极多）
+
+        def _accept(info: SongInfo) -> SongInfo:
+            with self._cache_lock:
+                self._cache[song_id] = info
+                self._cache[_song_id(info.source, info.identifier)] = info
+            return info
+
+        # 首选：用缓存里的原始曲目数据「定向重解同一首」——不搜索、零误绑风险、最省。
+        # 各源直链是临时 CDN 链接会过期，但用原始 search/track 数据重走解析即可拿到新直链。
+        raw = (cached.raw_data or {}).get("search") if cached is not None else None
+        if raw and hasattr(client, "resolvealbumtrack"):
+            try:
+                fresh = client.resolvealbumtrack(raw)
+                if isinstance(fresh, SongInfo) and fresh.with_valid_download_url:
+                    return _accept(fresh)
+            except Exception:
+                pass
+
+        # 回退：按「歌名 + 歌手」检索（远比单歌名更可能命中同一 identifier），仅接受
+        # identifier 精确匹配或「同名同歌手」匹配——不做纯同名兜底，避免放成别人的同名歌。
+        if not name and cached is not None:
+            name, singers = cached.song_name, (singers or cached.singers)
+        if not name:
+            return cached
         keyword = f"{name} {singers}".strip() if singers else name
         try:
             infos = client.search(keyword=keyword, num_threadings=SOURCE_THREADINGS)
@@ -374,15 +395,7 @@ class SessionManager:
                 (i for i in valid if (i.song_name or "") == name and (i.singers or "") == singers),
                 None,
             )
-        # 末路兜底：同名同源的第一条有效结果（用户本就想听这首歌名，旧 id 已不可用）
-        if match is None:
-            match = next((i for i in valid if (i.song_name or "") == name), None)
-        if match is None:
-            return cached
-        with self._cache_lock:
-            self._cache[song_id] = match
-            self._cache[_song_id(match.source, match.identifier)] = match
-        return match
+        return _accept(match) if match is not None else cached
 
     def download_io(self, info: SongInfo) -> tuple[dict, dict]:
         """播放/下载代理用的有效 headers/cookies。

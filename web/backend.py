@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import json
 import os
 import re
 from contextlib import suppress
@@ -16,7 +18,11 @@ from concurrent.futures import ThreadPoolExecutor
 
 from .api import models, session
 from .api.playlists import store as playlist_store
-from .api.session import ALBUM_TRACK_TIMEOUT, SEARCH_SOURCE_TIMEOUT
+from .api.session import ALBUM_TRACK_TIMEOUT, SEARCH_SOURCE_TIMEOUT, _is_http_url as _is_http
+
+# 上游直链「过期」的典型状态码：命中则强制重解一条新直链。其余 4xx（如 416 Range
+# Not Satisfiable，常见于 <audio> seek）不视为过期，避免无谓重解打乱播放。
+_EXPIRED_LINK_STATUSES = frozenset({401, 403, 404, 410})
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
@@ -101,45 +107,55 @@ def album(req: models.AlbumRequest) -> models.PlaylistResponse:
     return models.PlaylistResponse(total=len(songs), songs=[models.SongInfoOut(**s) for s in songs])
 
 
-@app.get("/api/album/stream")
-async def album_stream(album_id: str = Query(..., min_length=1), source: str | None = Query(None)):
-    """流式解析专辑：先下发曲目总数，再逐首解析直链、谁先解完谁先推送（解一首出现一首）。
+def _stream_tracks(resolve_source: str | None, tracks: list) -> EventSourceResponse:
+    """流式逐首解析曲目的通用 SSE 响应：先下发总数，再并发解析、解一首推一首，
+    携带 index 让前端按原始顺序插入。专辑/歌单共用。
 
-    携带 index 让前端可按专辑原始顺序插入，同时保持「边解边出」的即时反馈。
+    关键：客户端断开（切走/返回）时 sse-starlette 取消 event_gen，finally 里取消所有
+    未完成任务，避免被放弃的解析继续占满 _album_pool（大歌单尤甚）。
     """
-    import asyncio
-    import json
-
-    tracks, _name = await asyncio.to_thread(session.album_tracks_meta, album_id, source)
     total = len(tracks)
-    sem = asyncio.Semaphore(8)  # 限制并发，避免一次性打爆上游
-
-    async def resolve_one(index: int, track: dict):
-        async with sem:
-            loop = asyncio.get_running_loop()
-            try:
-                # 逐首超时：可解析的歌 1~2s 即返回；完全受限的歌会一直轮三方接口，
-                # 超时即跳过（返回 None），保证流式解析整体不卡死（被放弃的线程在独立池里跑完）。
-                song = await asyncio.wait_for(
-                    loop.run_in_executor(_album_pool, session.resolve_album_track, source, track),
-                    timeout=ALBUM_TRACK_TIMEOUT,
-                )
-            except (asyncio.TimeoutError, Exception):
-                song = None
-            return index, song
 
     async def event_gen():
+        sem = asyncio.Semaphore(8)  # 限制并发，避免一次性打爆上游
+
+        async def resolve_one(index: int, track: dict):
+            async with sem:
+                loop = asyncio.get_running_loop()
+                try:
+                    # 逐首超时：可解析的歌 1~2s 即返回；完全受限的歌会一直轮三方接口，
+                    # 超时即跳过（返回 None），保证整体不卡死（被放弃的线程在独立池里跑完）。
+                    song = await asyncio.wait_for(
+                        loop.run_in_executor(_album_pool, session.resolve_album_track, resolve_source, track),
+                        timeout=ALBUM_TRACK_TIMEOUT,
+                    )
+                except (asyncio.TimeoutError, Exception):
+                    song = None
+                return index, song
+
         yield {"event": "meta", "data": json.dumps({"total": total}, ensure_ascii=False)}
         tasks = [asyncio.create_task(resolve_one(i, t)) for i, t in enumerate(tracks)]
-        done = 0
-        for coro in asyncio.as_completed(tasks):
-            index, song = await coro
-            done += 1
-            payload = {"done": done, "total": total, "index": index, "song": song}
-            yield {"event": "track", "data": json.dumps(payload, ensure_ascii=False)}
-        yield {"event": "done", "data": json.dumps({"total": total}, ensure_ascii=False)}
+        try:
+            done = 0
+            for coro in asyncio.as_completed(tasks):
+                index, song = await coro
+                done += 1
+                payload = {"done": done, "total": total, "index": index, "song": song}
+                yield {"event": "track", "data": json.dumps(payload, ensure_ascii=False)}
+            yield {"event": "done", "data": json.dumps({"total": total}, ensure_ascii=False)}
+        finally:
+            for t in tasks:
+                if not t.done():
+                    t.cancel()
 
     return EventSourceResponse(event_gen())
+
+
+@app.get("/api/album/stream")
+async def album_stream(album_id: str = Query(..., min_length=1), source: str | None = Query(None)):
+    """流式解析专辑：解一首出现一首，避免整张专辑整批阻塞。"""
+    tracks, _name = await asyncio.to_thread(session.album_tracks_meta, album_id, source)
+    return _stream_tracks(source, tracks)
 
 
 # ---------- playlist (外部歌单链接解析) ----------
@@ -151,41 +167,9 @@ def playlist(req: models.PlaylistRequest) -> models.PlaylistResponse:
 
 @app.get("/api/playlist/stream")
 async def playlist_stream(url: str = Query(..., min_length=1), source: str | None = Query(None)):
-    """流式解析外部/热门歌单：先下发曲目总数，再逐首解析直链、谁先解完谁先推送。
-
-    与专辑流式解析同构（共用线程池/超时），避免百首歌单整批阻塞导致前端「一直解析」。
-    """
-    import asyncio
-    import json
-
+    """流式解析外部/热门歌单：解一首出现一首，避免百首歌单整批阻塞「一直解析」。"""
     src, tracks, _name = await asyncio.to_thread(session.playlist_tracks_meta, url, source)
-    total = len(tracks)
-    sem = asyncio.Semaphore(8)
-
-    async def resolve_one(index: int, track: dict):
-        async with sem:
-            loop = asyncio.get_running_loop()
-            try:
-                song = await asyncio.wait_for(
-                    loop.run_in_executor(_album_pool, session.resolve_album_track, src, track),
-                    timeout=ALBUM_TRACK_TIMEOUT,
-                )
-            except (asyncio.TimeoutError, Exception):
-                song = None
-            return index, song
-
-    async def event_gen():
-        yield {"event": "meta", "data": json.dumps({"total": total}, ensure_ascii=False)}
-        tasks = [asyncio.create_task(resolve_one(i, t)) for i, t in enumerate(tracks)]
-        done = 0
-        for coro in asyncio.as_completed(tasks):
-            index, song = await coro
-            done += 1
-            payload = {"done": done, "total": total, "index": index, "song": song}
-            yield {"event": "track", "data": json.dumps(payload, ensure_ascii=False)}
-        yield {"event": "done", "data": json.dumps({"total": total}, ensure_ascii=False)}
-
-    return EventSourceResponse(event_gen())
+    return _stream_tracks(src, tracks)
 
 
 # ---------- hot playlists (热门/推荐歌单广场) ----------
@@ -249,10 +233,6 @@ def remove_playlist_song(playlist_id: str, song_id: str) -> models.PlaylistDetai
     return models.PlaylistDetail(**p)
 
 
-def _is_http(url) -> bool:
-    return isinstance(url, str) and url.startswith("http")
-
-
 def _resolve_for_playback(song_id: str, force: bool = False):
     """取一首歌的可播放 SongInfo：缓存未命中或直链失效时，借歌名/歌手重解析。
 
@@ -281,7 +261,7 @@ def _open_upstream(song_id: str, info, extra_headers: dict | None = None):
         return requests.get(inf.download_url, headers=headers, cookies=cookies, stream=True, timeout=(10, 60))
 
     resp = do_get(info)
-    if resp.status_code >= 400:
+    if resp.status_code in _EXPIRED_LINK_STATUSES:
         with suppress(Exception):
             resp.close()
         fresh = _resolve_for_playback(song_id, force=True)
@@ -380,8 +360,9 @@ def stream(song_id: str, request: Request) -> StreamingResponse:
     extra = {"Range": range_header} if range_header else None
     # 直链过期会被上游 CDN 拒（4xx），_open_upstream 会强制重解并重试一次
     req, info = _open_upstream(song_id, info, extra)
-    # 重解后仍失败：返回 502 而非把错误响应体当音频流回去（否则前端表现为「点了没反应」）
-    if req.status_code >= 400:
+    # 416(Range Not Satisfiable) 是 seek 的正常响应，原样透传给浏览器；200/206 正常播放；
+    # 其余（重解后仍失败）返回 502，而非把错误响应体当音频流回去（否则前端「点了没反应」）。
+    if req.status_code not in (200, 206, 416):
         with suppress(Exception):
             req.close()
         raise HTTPException(502, "upstream link expired, retry later")
@@ -392,7 +373,7 @@ def stream(song_id: str, request: Request) -> StreamingResponse:
     for h in ("Content-Range", "Content-Length"):
         if req.headers.get(h):
             resp_headers[h] = req.headers[h]
-    status_code = req.status_code if req.status_code in (200, 206) else 200
+    status_code = req.status_code if req.status_code in (200, 206, 416) else 200
 
     def iter_chunks():
         try:

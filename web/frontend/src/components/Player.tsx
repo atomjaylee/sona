@@ -12,6 +12,8 @@ export function Player() {
   const rafRef = useRef(0)
   // 每首歌的自动重试计数：直链过期时换 src 触发后端重解，至多重试 2 次避免死循环
   const retryRef = useRef<{ id: string; n: number }>({ id: '', n: 0 })
+  // 连续失败计数：跳过死链自动播下一首，但整列表都失败时停止，避免无限循环
+  const failChainRef = useRef(0)
 
   const song = queue[current]
   const src = song?.playable
@@ -32,13 +34,20 @@ export function Player() {
     const onError = () => {
       const r = retryRef.current
       if (song && r.id === song.id && r.n < 2) {
+        // 先就地重试：换 nonce 强制重新请求，后端会重解一条新直链
         r.n += 1
         setReloadKey((k) => k + 1)
+        return
+      }
+      // 重试用尽：跳过这首死链播下一首；连续失败超过队列长度则停止，避免空转
+      if (queue.length > 1 && failChainRef.current < queue.length) {
+        failChainRef.current += 1
+        next()
       }
     }
     a.addEventListener('error', onError)
     return () => a.removeEventListener('error', onError)
-  }, [song, audioRef])
+  }, [song, audioRef, queue.length, next])
 
   // 切到新歌时自动播放（仅依赖 src，避免与原生 play/pause 事件形成回环）
   useEffect(() => {
@@ -53,7 +62,10 @@ export function Player() {
     if (!a) return
     const onTime = () => setCur(a.currentTime)
     const onDur = () => setDur(a.duration || 0)
-    const onPlay = () => setPlaying(true)
+    const onPlay = () => {
+      failChainRef.current = 0 // 成功播放即重置连续失败计数
+      setPlaying(true)
+    }
     const onPause = () => setPlaying(false)
     a.addEventListener('timeupdate', onTime)
     a.addEventListener('loadedmetadata', onDur)

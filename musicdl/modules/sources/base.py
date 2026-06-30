@@ -121,6 +121,13 @@ class BaseMusicClient():
             if song_info.identifier in identifiers: continue
             identifiers.add(song_info.identifier); unique_song_infos.append(song_info)
         return unique_song_infos
+    '''_finalizetracks: 歌单/专辑解析后的统一收尾（去重 + 建唯一工作目录 + 逐首/逐集落盘目录）'''
+    def _finalizetracks(self, song_infos: list[SongInfo], keyword: str) -> list[SongInfo]:
+        song_infos, work_dir = self._removeduplicates(song_infos=song_infos), self._constructuniqueworkdir(keyword=keyword)
+        for song_info in song_infos:
+            song_info.work_dir, episodes = work_dir, song_info.episodes if isinstance(song_info.episodes, list) else []
+            for eps_info in episodes: eps_info.work_dir = sanitize_filepath(os.path.join(work_dir, f"{song_info.song_name} - {song_info.singers}")); IOUtils.touchdir(eps_info.work_dir)
+        return song_infos
     '''_resolveplaylisttracks: 并行解析歌单内每首曲目的下载直链，保持原顺序，返回有效 SongInfo 列表'''
     def _resolveplaylisttracks(self, tracks: list, resolve_one, num_threadings: int = 8, desc: str = '') -> list[SongInfo]:
         if not tracks: return []
