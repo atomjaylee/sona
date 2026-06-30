@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import logging
 import threading
 import time
+from collections import OrderedDict
 from typing import Any
 
 import requests
@@ -10,6 +12,12 @@ from musicdl.musicdl import MusicClient
 from musicdl.modules import SongInfo
 
 from .quality import quality_tier
+
+logger = logging.getLogger("musicdl.web")
+
+# 内存缓存上限（防长跑内存无限上涨）：超出按 LRU 淘汰最久未用项。
+CACHE_MAX_SONGS = 5000     # 已解析 SongInfo 缓存条数（每条含 raw_data，偏大）
+RESULT_CACHE_MAX = 500     # 关键词分页检索结果缓存条数
 
 
 DEFAULT_SOURCES = ["NeteaseMusicClient", "QQMusicClient", "KuwoMusicClient"]
@@ -73,12 +81,12 @@ class SessionManager:
             init_music_clients_cfg={s: dict(per_source_cfg) for s in self.sources},
             clients_threadings={s: SOURCE_THREADINGS for s in self.sources},
         )
-        # 缓存: song_id -> SongInfo
-        self._cache: dict[str, SongInfo] = {}
+        # 缓存: song_id -> SongInfo（OrderedDict 实现 LRU，超 CACHE_MAX_SONGS 淘汰最久未用）
+        self._cache: "OrderedDict[str, SongInfo]" = OrderedDict()
         self._cache_lock = threading.Lock()
         self._search_lock = threading.Lock()
-        # 关键词检索结果缓存: (source, keyword) -> (timestamp, list[dict])
-        self._result_cache: dict[tuple[str, str, int], tuple[float, list[dict]]] = {}
+        # 关键词检索结果缓存: (source, keyword, page) -> (timestamp, list[dict])，同样 LRU 有界
+        self._result_cache: "OrderedDict[tuple[str, str, int], tuple[float, list[dict]]]" = OrderedDict()
         self._result_cache_lock = threading.Lock()
         # 热门歌单缓存: source -> (timestamp, list[dict])
         self._hot_cache: dict[str, tuple[float, list[dict]]] = {}
@@ -102,8 +110,7 @@ class SessionManager:
                 if not isinstance(info, SongInfo) or not info.with_valid_download_url:
                     continue
                 sid = _song_id(source, info.identifier)
-                with self._cache_lock:
-                    self._cache[sid] = info
+                self._cache_put(sid, info)
                 out.append(self._to_json(sid, info))
         return out
 
@@ -123,18 +130,21 @@ class SessionManager:
                 return hit[1]
         try:
             infos = client.search(keyword=keyword, num_threadings=SOURCE_THREADINGS, page=page)
-        except Exception:
+        except Exception as e:
+            logger.warning("search_source(%s, %r, page=%d) failed: %s", source, keyword, page, e)
             return []
         out: list[dict] = []
         for info in infos:
             if not isinstance(info, SongInfo) or not info.with_valid_download_url:
                 continue
             sid = _song_id(source, info.identifier)
-            with self._cache_lock:
-                self._cache[sid] = info
+            self._cache_put(sid, info)
             out.append(self._to_json(sid, info))
         with self._result_cache_lock:
             self._result_cache[key] = (now, out)
+            self._result_cache.move_to_end(key)
+            while len(self._result_cache) > RESULT_CACHE_MAX:
+                self._result_cache.popitem(last=False)
         return out
 
     # ---- album ----
@@ -188,13 +198,13 @@ class SessionManager:
             return None
         try:
             info = client.resolvealbumtrack(track_info)
-        except Exception:
+        except Exception as e:
+            logger.warning("resolve_album_track(%s) failed: %s", source, e)
             return None
         if not isinstance(info, SongInfo) or not info.with_valid_download_url:
             return None
         sid = _song_id(info.source, info.identifier)
-        with self._cache_lock:
-            self._cache[sid] = info
+        self._cache_put(sid, info)
         return self._to_json(sid, info)
 
     def parse_album(self, album_id: str, source: str | None = None) -> list[dict]:
@@ -207,15 +217,15 @@ class SessionManager:
             return []
         try:
             infos = client.parsealbum(album_id=album_id)
-        except Exception:
+        except Exception as e:
+            logger.warning("parse_album(%s, %s) failed: %s", album_id, source, e)
             return []
         out: list[dict] = []
         for info in infos:
             if not isinstance(info, SongInfo) or not info.with_valid_download_url:
                 continue
             sid = _song_id(info.source, info.identifier)
-            with self._cache_lock:
-                self._cache[sid] = info
+            self._cache_put(sid, info)
             out.append(self._to_json(sid, info))
         return out
 
@@ -232,7 +242,8 @@ class SessionManager:
                 continue
             try:
                 tracks, name = client.getplaylisttracks(playlist_url=url)
-            except Exception:
+            except Exception as e:
+                logger.warning("getplaylisttracks(%s, %r) failed: %s", s, url, e)
                 tracks, name = [], ""
             if tracks:
                 return s, list(tracks), name or ""
@@ -245,8 +256,7 @@ class SessionManager:
             if not isinstance(info, SongInfo) or not info.with_valid_download_url:
                 continue
             sid = _song_id(info.source, info.identifier)
-            with self._cache_lock:
-                self._cache[sid] = info
+            self._cache_put(sid, info)
             out.append(self._to_json(sid, info))
         return out
 
@@ -270,7 +280,8 @@ class SessionManager:
                 out = self._hot_qq()
             else:
                 out = []
-        except Exception:
+        except Exception as e:
+            logger.warning("hot_playlists(%s) failed: %s", source, e)
             out = []
         if out:
             with self._hot_cache_lock:
@@ -334,10 +345,22 @@ class SessionManager:
             })
         return out
 
+    # ---- cache helpers ----
+    def _cache_put(self, sid: str, info: SongInfo) -> None:
+        """写入 SongInfo 缓存并维持 LRU：标记为最近使用，超上限淘汰最久未用项。"""
+        with self._cache_lock:
+            self._cache[sid] = info
+            self._cache.move_to_end(sid)
+            while len(self._cache) > CACHE_MAX_SONGS:
+                self._cache.popitem(last=False)
+
     # ---- access cached song ----
     def get_song(self, song_id: str) -> SongInfo | None:
         with self._cache_lock:
-            return self._cache.get(song_id)
+            info = self._cache.get(song_id)
+            if info is not None:
+                self._cache.move_to_end(song_id)  # 命中即刷新 LRU，热歌不被淘汰
+            return info
 
     def reresolve(self, song_id: str, name: str | None, singers: str | None, force: bool = False) -> SongInfo | None:
         """重新解析一条有效直链。
@@ -361,9 +384,8 @@ class SessionManager:
             return cached
 
         def _accept(info: SongInfo) -> SongInfo:
-            with self._cache_lock:
-                self._cache[song_id] = info
-                self._cache[_song_id(info.source, info.identifier)] = info
+            self._cache_put(song_id, info)
+            self._cache_put(_song_id(info.source, info.identifier), info)
             return info
 
         # 首选：用缓存里的原始曲目数据「定向重解同一首」——不搜索、零误绑风险、最省。
@@ -374,8 +396,8 @@ class SessionManager:
                 fresh = client.resolvealbumtrack(raw)
                 if isinstance(fresh, SongInfo) and fresh.with_valid_download_url:
                     return _accept(fresh)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("reresolve targeted re-resolve %s failed, fallback to search: %s", song_id, e)
 
         # 回退：按「歌名 + 歌手」检索（远比单歌名更可能命中同一 identifier），仅接受
         # identifier 精确匹配或「同名同歌手」匹配——不做纯同名兜底，避免放成别人的同名歌。
@@ -386,7 +408,8 @@ class SessionManager:
         keyword = f"{name} {singers}".strip() if singers else name
         try:
             infos = client.search(keyword=keyword, num_threadings=SOURCE_THREADINGS)
-        except Exception:
+        except Exception as e:
+            logger.warning("reresolve search fallback %s (%r) failed: %s", song_id, keyword, e)
             return cached
         valid = [i for i in infos if isinstance(i, SongInfo) and i.with_valid_download_url]
         match = next((i for i in valid if _song_id(i.source, i.identifier) == song_id), None)

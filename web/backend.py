@@ -1,17 +1,20 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
+import logging
 import os
 import re
+import socket
 from contextlib import suppress
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 import requests
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from sse_starlette.sse import EventSourceResponse
 
 from concurrent.futures import ThreadPoolExecutor
@@ -19,6 +22,8 @@ from concurrent.futures import ThreadPoolExecutor
 from .api import models, session
 from .api.playlists import store as playlist_store
 from .api.session import ALBUM_TRACK_TIMEOUT, SEARCH_SOURCE_TIMEOUT, _is_http_url as _is_http
+
+logger = logging.getLogger("musicdl.web")
 
 # 上游直链「过期」的典型状态码：命中则强制重解一条新直链。其余 4xx（如 416 Range
 # Not Satisfiable，常见于 <audio> seek）不视为过期，避免无谓重解打乱播放。
@@ -31,14 +36,64 @@ STATIC_DIR = BASE_DIR / "static"
 # 隔离，避免这些“僵尸”线程占满默认 executor 拖慢搜索等其它接口。
 _album_pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="album-resolve")
 
+# 可选鉴权 token：设置 MUSICDL_AUTH_TOKEN 后，所有 /api/* 需带 ?token= 或
+# Authorization: Bearer 才放行（适合放公网/反代场景）。默认不设 = 不鉴权（本机使用）。
+_AUTH_TOKEN = os.environ.get("MUSICDL_AUTH_TOKEN", "").strip()
+
+
+def _is_safe_public_url(url: str) -> bool:
+    """SSRF 防护：仅允许 http(s) 且主机解析到公网地址的 URL。
+
+    拒绝环回/私网/链路本地/保留/多播地址，防止被用来探测内网或读取云元数据
+    （如 169.254.169.254）。主机会做 DNS 解析并校验所有解析结果。
+    """
+    try:
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+            return False
+        infos = socket.getaddrinfo(parsed.hostname, None)
+    except Exception:
+        return False
+    for info in infos:
+        try:
+            addr = ipaddress.ip_address(info[4][0])
+        except ValueError:
+            return False
+        if (addr.is_private or addr.is_loopback or addr.is_link_local
+                or addr.is_reserved or addr.is_multicast or addr.is_unspecified):
+            return False
+    return True
+
+
 app = FastAPI(title="musicdl web", version="1.0.0")
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# CORS：默认仅放行本机来源（SPA 与后端同源，按 IP 访问也是同源，无需 CORS）；
+# 跨站 JS 想读取本地 API 会被浏览器拦下。需放开可设 MUSICDL_CORS_ORIGINS（逗号分隔，
+# 或单个 "*"）。
+_cors_env = os.environ.get("MUSICDL_CORS_ORIGINS", "").strip()
+if _cors_env == "*":
+    app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+elif _cors_env:
+    _origins = [o.strip() for o in _cors_env.split(",") if o.strip()]
+    app.add_middleware(CORSMiddleware, allow_origins=_origins, allow_methods=["*"], allow_headers=["*"])
+else:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+
+@app.middleware("http")
+async def _auth_guard(request: Request, call_next):
+    """启用 MUSICDL_AUTH_TOKEN 时，校验 /api/* 的 token（支持 Bearer 头或 ?token=）。"""
+    if _AUTH_TOKEN and request.url.path.startswith("/api/"):
+        header = request.headers.get("authorization", "")
+        token = header[7:].strip() if header[:7].lower() == "bearer " else request.query_params.get("token", "")
+        if token != _AUTH_TOKEN:
+            return JSONResponse({"detail": "unauthorized"}, status_code=401)
+    return await call_next(request)
 
 
 # ---------- sources ----------
@@ -393,11 +448,18 @@ def stream(song_id: str, request: Request) -> StreamingResponse:
 # ---------- cover proxy (同源代理封面，供前端 WebGL 取色，避免跨域污染 canvas) ----------
 @app.get("/api/cover")
 def cover(url: str = Query(..., min_length=8)) -> StreamingResponse:
-    if not url.startswith("http"):
-        raise HTTPException(400, "invalid cover url")
+    # SSRF 防护：url 完全来自客户端，须校验主机为公网地址；并禁用重定向，
+    # 防止「公网地址 302 跳内网」绕过（封面 CDN 都是直链，禁跳转不影响正常使用）。
+    if not _is_safe_public_url(url):
+        raise HTTPException(400, "invalid or disallowed cover url")
     try:
-        req = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, stream=True, timeout=(8, 30))
+        req = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, stream=True, timeout=(8, 30), allow_redirects=False)
+        if req.status_code in (301, 302, 303, 307, 308):
+            req.close()
+            raise HTTPException(400, "cover url redirect not allowed")
         req.raise_for_status()
+    except HTTPException:
+        raise
     except Exception:
         raise HTTPException(502, "failed to fetch cover")
     media_type = req.headers.get("Content-Type", "image/jpeg")
@@ -490,7 +552,11 @@ def spa(path: str) -> FileResponse:
 
 def main() -> None:
     import uvicorn
-    uvicorn.run("web.backend:app", host="0.0.0.0", port=8000, reload=False)
+    # 默认只监听本机，避免裸跑时无意暴露到局域网/公网；需对外可设 MUSICDL_HOST=0.0.0.0。
+    # （Docker 镜像的 CMD 显式传 --host 0.0.0.0，不走这里，容器对外由端口映射控制。）
+    host = os.environ.get("MUSICDL_HOST", "127.0.0.1")
+    port = int(os.environ.get("MUSICDL_PORT", "8000"))
+    uvicorn.run("web.backend:app", host=host, port=port, reload=False)
 
 
 if __name__ == "__main__":

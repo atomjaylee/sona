@@ -5,9 +5,14 @@ import os
 import threading
 import time
 import uuid
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import Any
+
+try:
+    import fcntl  # POSIX 文件锁；Windows 无此模块时退化为「仅进程内锁」
+except ImportError:  # pragma: no cover
+    fcntl = None  # type: ignore
 
 # 持久化目录：默认放在 web/musicdl_outputs（docker-compose 已把该目录挂载为宿主机卷，
 # 容器重启不丢）。可用环境变量 MUSICDL_DATA_DIR 覆盖。
@@ -43,9 +48,32 @@ class PlaylistStore:
 
     def __init__(self, path: Path = _STORE_FILE) -> None:
         self._path = path
+        self._lockpath = path.with_suffix(".lock")  # 独立锁文件：跨进程串行化读改写
         self._lock = threading.RLock()
         self._data: dict[str, Any] = {"playlists": []}
         self._load()
+
+    @contextmanager
+    def _exclusive(self):
+        """读-改-写的跨进程独占区：进程内锁 + 文件锁，进入时从磁盘重载、退出时落盘。
+
+        多 worker/多容器同时改歌单时，靠文件锁串行化、并在改前重载最新内容，
+        避免「基于陈旧内存覆盖别人刚写的数据」。无 fcntl 的平台退化为仅进程内锁。
+        """
+        with self._lock:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            lockf = open(self._lockpath, "a+")
+            try:
+                if fcntl is not None:
+                    fcntl.flock(lockf, fcntl.LOCK_EX)
+                self._load()       # 改前重载，拿到其它进程的最新写入
+                yield
+                self._save()
+            finally:
+                with suppress(Exception):
+                    if fcntl is not None:
+                        fcntl.flock(lockf, fcntl.LOCK_UN)
+                lockf.close()
 
     # ---- 持久化 ----
     def _load(self) -> None:
@@ -99,39 +127,34 @@ class PlaylistStore:
 
     def create(self, name: str) -> dict:
         name = (name or "").strip() or "新歌单"
-        with self._lock:
+        with self._exclusive():
             p = {"id": _new_id("pl"), "name": name, "created_at": _now(), "updated_at": _now(), "songs": []}
             self._data["playlists"].append(p)
-            self._save()
             return self._summary(p)
 
     def rename(self, playlist_id: str, name: str) -> dict | None:
         name = (name or "").strip()
-        with self._lock:
+        with self._exclusive():
             p = self._find(playlist_id)
             if p is None:
                 return None
             if name:
                 p["name"] = name
                 p["updated_at"] = _now()
-                self._save()
             return self._summary(p)
 
     def delete(self, playlist_id: str) -> bool:
-        with self._lock:
+        with self._exclusive():
             before = len(self._data["playlists"])
             self._data["playlists"] = [p for p in self._data["playlists"] if p["id"] != playlist_id]
-            changed = len(self._data["playlists"]) != before
-            if changed:
-                self._save()
-            return changed
+            return len(self._data["playlists"]) != before
 
     def add_song(self, playlist_id: str, song: dict) -> dict | None:
         """把一首歌加入歌单；按 song id 去重（已存在则原样返回，不重复加）。"""
         sid = song.get("id")
         if not sid:
             return None
-        with self._lock:
+        with self._exclusive():
             p = self._find(playlist_id)
             if p is None:
                 return None
@@ -139,11 +162,10 @@ class PlaylistStore:
             if not any(s.get("id") == sid for s in songs):
                 songs.append(song)
                 p["updated_at"] = _now()
-                self._save()
             return {**self._summary(p), "songs": list(songs)}
 
     def remove_song(self, playlist_id: str, song_id: str) -> dict | None:
-        with self._lock:
+        with self._exclusive():
             p = self._find(playlist_id)
             if p is None:
                 return None
@@ -152,7 +174,6 @@ class PlaylistStore:
             if len(kept) != len(songs):
                 p["songs"] = kept
                 p["updated_at"] = _now()
-                self._save()
             return {**self._summary(p), "songs": list(p.get("songs") or [])}
 
     def find_song(self, song_id: str) -> dict | None:
